@@ -978,13 +978,10 @@ class SeminarGUI:
                             self.master.after(0, self.update_status, f"업데이트 다운로드 중... {pct}%")
 
             self.master.after(0, self.update_status, "업데이트 설치 중...")
-            # /VERYSILENT: UI 없이 자동 설치, /NORESTART: 자동 재시작 방지
-            subprocess.Popen(
-                [tmp_path, '/VERYSILENT', '/NORESTART'],
-                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
-            )
+            # /SILENT: 진행 창만 표시하며 자동 설치, /NORESTART: 자동 재시작 방지
+            subprocess.Popen([tmp_path, '/SILENT', '/NORESTART'])
             # 현재 앱 종료 (인스톨러가 덮어쓰기 후 재시작)
-            self.master.after(500, self.master.destroy)
+            self.master.after(1000, self.master.destroy)
 
         except Exception as e:
             logging.error(f"업데이트 설치 실패: {e}")
