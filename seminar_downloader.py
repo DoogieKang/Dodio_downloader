@@ -982,15 +982,15 @@ class SeminarGUI:
                 # 앱 종료 후 인스톨러 실행을 위한 배치 파일 작성
                 # (앱이 완전히 닫힌 뒤 인스톨러가 파일을 덮어쓸 수 있도록 3초 대기)
                 bat_path = os.path.join(tempfile.gettempdir(), "dodio_update.bat")
-                app_path = sys.executable  # 현재 실행 중인 exe 경로 그대로 사용
-                with open(bat_path, 'w', encoding='utf-8') as f:
+                app_path = sys.executable
+                with open(bat_path, 'w', encoding='mbcs') as f:  # mbcs: Windows 로컬 인코딩 (한글 경로 대응)
                     f.write(
-                        f'@echo off\n'
-                        f'timeout /t 3 /nobreak >nul\n'
-                        f'start /wait "" "{tmp_path}" /VERYSILENT /NORESTART\n'
-                        f'start "" "{app_path}"\n'
+                        f'@echo off\r\n'
+                        f'timeout /t 3 /nobreak >nul\r\n'
+                        f'start /wait "" "{tmp_path}" /VERYSILENT /NORESTART\r\n'
+                        f'start "" "{app_path}"\r\n'
                     )
-                subprocess.Popen(f'start "" /b cmd /c "{bat_path}"', shell=True)
+                subprocess.Popen(['cmd', '/c', 'start', '', '/b', 'cmd', '/c', bat_path])
                 # 배치 파일 실행 후 앱 종료
                 self.master.after(500, self.master.destroy)
             except Exception as e:

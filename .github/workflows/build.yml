@@ -26,6 +26,13 @@ jobs:
       - name: 패키지 설치
         run: pip install -r requirements.txt pyinstaller
 
+      - name: 버전 업데이트
+        shell: pwsh
+        run: |
+          $v = "${{ github.event.inputs.version }}"
+          (Get-Content installer.iss) -replace '#define AppVersion ".*"', "#define AppVersion `"$v`"" | Set-Content installer.iss
+          (Get-Content seminar_downloader.py) -replace 'APP_VERSION = ".*"', "APP_VERSION = `"$v`"" | Set-Content seminar_downloader.py
+
       - name: ffmpeg 다운로드
         run: |
           mkdir build_temp
@@ -37,13 +44,6 @@ jobs:
 
       - name: Inno Setup 설치
         run: choco install innosetup --yes
-
-      - name: 버전 업데이트
-        shell: pwsh
-        run: |
-          $v = "${{ github.event.inputs.version }}"
-          (Get-Content installer.iss) -replace '#define AppVersion ".*"', "#define AppVersion `"$v`"" | Set-Content installer.iss
-          (Get-Content seminar_downloader.py) -replace 'APP_VERSION = ".*"', "APP_VERSION = `"$v`"" | Set-Content seminar_downloader.py
 
       - name: 인스톨러 빌드
         run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss'
