@@ -1,0 +1,53 @@
+name: Build Windows Installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '배포할 버전 (예: 1.1)'
+        required: true
+        default: '1.0'
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Python 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 패키지 설치
+        run: pip install -r requirements.txt pyinstaller
+
+      - name: ffmpeg 다운로드
+        run: |
+          mkdir build_temp
+          curl -L "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -o ffmpeg.zip
+          7z e ffmpeg.zip "*/bin/ffmpeg.exe" -obuild_temp -r
+
+      - name: PyInstaller 빌드
+        run: pyinstaller seminar_downloader.spec --noconfirm
+
+      - name: Inno Setup 설치
+        run: choco install innosetup --yes
+
+      - name: installer.iss 버전 업데이트
+        shell: pwsh
+        run: |
+          $v = "${{ github.event.inputs.version }}"
+          (Get-Content installer.iss) -replace '#define AppVersion ".*"', "#define AppVersion `"$v`"" | Set-Content installer.iss
+
+      - name: 인스톨러 빌드
+        run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss'
+
+      - name: GitHub Releases에 업로드
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.event.inputs.version }}
+          name: v${{ github.event.inputs.version }}
+          files: installer_output/DodioDownloader_Setup.exe
