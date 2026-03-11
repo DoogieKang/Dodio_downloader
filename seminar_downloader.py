@@ -547,7 +547,7 @@ class SeminarGUI:
                     'id': str(cid),
                     'sid': str(item.get('sid', '')),
                     'title': item.get('seminarTitle', item.get('title', 'N/A')).replace('&#8230;', '...').replace('&#34;', '"').replace('&#39;', "'").replace('&#183;', '·'),
-                    'date': item.get('eventDt', '')[:16],
+                    'date': item.get('eventDt', '')[:10] + ' ' + item.get('beginTime', ''),
                     'duration': duration_in_seconds,
                     'vod_list': vod_list,
                     'subtitle_url': item.get('smiUrl') or item.get('vttUrl'),
