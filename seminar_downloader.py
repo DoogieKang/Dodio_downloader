@@ -979,10 +979,14 @@ class SeminarGUI:
 
             self.master.after(0, self.update_status, "업데이트 설치 중...")
             try:
-                # shell=True: Windows 셸을 통해 실행 (UAC, 보안 경고 처리)
-                subprocess.Popen(f'"{tmp_path}" /SILENT /NORESTART', shell=True)
-                # 인스톨러 실행 성공 시 앱 종료
-                self.master.after(1500, self.master.destroy)
+                # 앱 종료 후 인스톨러 실행을 위한 배치 파일 작성
+                # (앱이 완전히 닫힌 뒤 인스톨러가 파일을 덮어쓸 수 있도록 3초 대기)
+                bat_path = os.path.join(tempfile.gettempdir(), "dodio_update.bat")
+                with open(bat_path, 'w', encoding='utf-8') as f:
+                    f.write(f'@echo off\ntimeout /t 3 /nobreak >nul\n"{tmp_path}" /SILENT /NORESTART\n')
+                subprocess.Popen(f'start "" /b cmd /c "{bat_path}"', shell=True)
+                # 배치 파일 실행 후 앱 종료
+                self.master.after(500, self.master.destroy)
             except Exception as e:
                 logging.error(f"인스톨러 실행 실패: {e}")
                 self.master.after(0, messagebox.showerror, "설치 실패",
