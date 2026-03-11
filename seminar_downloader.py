@@ -982,8 +982,14 @@ class SeminarGUI:
                 # 앱 종료 후 인스톨러 실행을 위한 배치 파일 작성
                 # (앱이 완전히 닫힌 뒤 인스톨러가 파일을 덮어쓸 수 있도록 3초 대기)
                 bat_path = os.path.join(tempfile.gettempdir(), "dodio_update.bat")
+                app_path = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "DodioDownloader", "DodioDownloader.exe")
                 with open(bat_path, 'w', encoding='utf-8') as f:
-                    f.write(f'@echo off\ntimeout /t 3 /nobreak >nul\n"{tmp_path}" /SILENT /NORESTART\n')
+                    f.write(
+                        f'@echo off\n'
+                        f'timeout /t 3 /nobreak >nul\n'
+                        f'start /wait "" "{tmp_path}" /VERYSILENT /NORESTART\n'
+                        f'start "" "{app_path}"\n'
+                    )
                 subprocess.Popen(f'start "" /b cmd /c "{bat_path}"', shell=True)
                 # 배치 파일 실행 후 앱 종료
                 self.master.after(500, self.master.destroy)
