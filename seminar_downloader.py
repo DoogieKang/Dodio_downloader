@@ -978,14 +978,20 @@ class SeminarGUI:
                             self.master.after(0, self.update_status, f"업데이트 다운로드 중... {pct}%")
 
             self.master.after(0, self.update_status, "업데이트 설치 중...")
-            # /SILENT: 진행 창만 표시하며 자동 설치, /NORESTART: 자동 재시작 방지
-            subprocess.Popen([tmp_path, '/SILENT', '/NORESTART'])
-            # 현재 앱 종료 (인스톨러가 덮어쓰기 후 재시작)
-            self.master.after(1000, self.master.destroy)
+            try:
+                # shell=True: Windows 셸을 통해 실행 (UAC, 보안 경고 처리)
+                subprocess.Popen(f'"{tmp_path}" /SILENT /NORESTART', shell=True)
+                # 인스톨러 실행 성공 시 앱 종료
+                self.master.after(1500, self.master.destroy)
+            except Exception as e:
+                logging.error(f"인스톨러 실행 실패: {e}")
+                self.master.after(0, messagebox.showerror, "설치 실패",
+                    f"인스톨러 실행에 실패했습니다:\n{e}\n\n"
+                    f"직접 실행해주세요:\n{tmp_path}")
 
         except Exception as e:
-            logging.error(f"업데이트 설치 실패: {e}")
-            self.master.after(0, messagebox.showerror, "업데이트 실패", f"업데이트 중 오류가 발생했습니다:\n{e}")
+            logging.error(f"업데이트 다운로드 실패: {e}")
+            self.master.after(0, messagebox.showerror, "업데이트 실패", f"다운로드 중 오류가 발생했습니다:\n{e}")
 
     def _get_ffmpeg_path(self):
         """번들 실행 파일 옆의 ffmpeg.exe를 우선 사용하고, 없으면 PATH에서 찾습니다."""
