@@ -1138,7 +1138,7 @@ class SeminarGUI:
                 vv = int(time.time())
                 url = (f"{W3_BASE}/main/service/list.do"
                        f"?cmd=mainList&menu={menu}&mc={mc}"
-                       f"&ct1={ct1}&pageSize=10&vv={vv}")
+                       f"&ct1={ct1}&pageSize=21&vv={vv}")
                 r = requests.get(url, headers=W3_HEADERS, timeout=15)
                 if r.status_code != 200:
                     continue
