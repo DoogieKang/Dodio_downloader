@@ -1118,9 +1118,12 @@ class SeminarGUI:
         t.start()
 
     def _fetch_w3_conferences(self, mc, comm_name, start_dt, end_dt):
-        """회의 목록을 가져옵니다. searchList → mainList 순으로 시도합니다."""
+        """회의 목록을 가져옵니다. 국회 대수(ct1=22~16)별로 각 10건씩 수집합니다."""
         all_confs = []
         seen = set()
+
+        # mc가 크면(상임위) menu=30 사용, 작으면 menu=mc 사용
+        menu = '30' if int(mc) > 100 else mc
 
         def add_confs(confs):
             for c in confs:
@@ -1129,27 +1132,21 @@ class SeminarGUI:
                     seen.add(key)
                     all_confs.append(c)
 
-        vv = int(time.time())
-
-        # mainList (페이지네이션) - searchList는 항상 0건 반환하므로 사용하지 않음
-        for page in range(1, 51):
+        # 국회 대수별(22대→16대) mainList 조회 - API는 대수당 최신 10건만 반환
+        for ct1 in range(22, 15, -1):
             try:
+                vv = int(time.time())
                 url = (f"{W3_BASE}/main/service/list.do"
-                       f"?cmd=mainList&menu={mc}&mc={mc}"
-                       f"&curPages={page}&vv={vv}")
+                       f"?cmd=mainList&menu={menu}&mc={mc}"
+                       f"&ct1={ct1}&pageSize=10&vv={vv}")
                 r = requests.get(url, headers=W3_HEADERS, timeout=15)
                 if r.status_code != 200:
-                    break
+                    continue
                 confs = r.json().get('confList', [])
-                if not confs:
-                    break
-                before = len(all_confs)
                 add_confs(confs)
-                if len(all_confs) == before:
-                    break  # 중복만 있으면 종료
-                time.sleep(0.05)
+                time.sleep(0.08)
             except Exception:
-                break
+                continue
 
         # 날짜 필터 (client-side)
         if start_dt or end_dt:
