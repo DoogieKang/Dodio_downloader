@@ -1118,33 +1118,83 @@ class SeminarGUI:
         t.start()
 
     def _fetch_w3_conferences(self, mc, comm_name, start_dt, end_dt):
-        """회의 목록을 가져옵니다. 국회 대수(ct1=22~16)별로 각 10건씩 수집합니다."""
+        """회의 목록 수집.
+        22대 국회: movieInfo(ct2+ct3 조합)로 전체 스캔 → 완전한 목록.
+        이전 대수: mainList로 최신 21건.
+        """
         all_confs = []
         seen = set()
-
-        # mc가 크면(상임위) menu=30 사용, 작으면 menu=mc 사용
         menu = '30' if int(mc) > 100 else mc
 
-        def add_confs(confs):
-            for c in confs:
-                key = f"{c.get('ct1')}_{c.get('ct2')}_{c.get('ct3')}"
-                if key not in seen:
-                    seen.add(key)
-                    all_confs.append(c)
+        # ── 22대 국회 전체 스캔 ──────────────────────────────────────
+        # 현재 최고 ct2 파악 (mainList에서 샘플로)
+        try:
+            vv = int(time.time())
+            r = requests.get(f"{W3_BASE}/main/service/list.do",
+                             params={'cmd': 'mainList', 'menu': menu, 'mc': mc,
+                                     'ct1': '22', 'pageSize': '21', 'vv': vv},
+                             headers=W3_HEADERS, timeout=15)
+            recent22 = r.json().get('confList', [])
+            max_ct2 = max((int(c.get('ct2', '0')) for c in recent22), default=440)
+        except Exception:
+            max_ct2 = 440
 
-        # 국회 대수별(22대→16대) mainList 조회 - API는 대수당 최신 10건만 반환
-        for ct1 in range(22, 15, -1):
+        CT1_22_START = 410  # 22대 국회 시작 ct2 (415에 여유 포함)
+
+        def check_meeting_22(combo):
+            ct2, ct3 = combo
             try:
                 vv = int(time.time())
-                url = (f"{W3_BASE}/main/service/list.do"
-                       f"?cmd=mainList&menu={menu}&mc={mc}"
-                       f"&ct1={ct1}&pageSize=21&vv={vv}")
-                r = requests.get(url, headers=W3_HEADERS, timeout=15)
+                r = requests.get(f"{W3_BASE}/main/service/movie.do",
+                                 params={'cmd': 'movieInfo', 'mc': mc, 'ct1': '22',
+                                         'ct2': str(ct2), 'ct3': f'{ct3:02d}', 'vv': vv},
+                                 headers=W3_HEADERS, timeout=10)
                 if r.status_code != 200:
-                    continue
-                confs = r.json().get('confList', [])
-                add_confs(confs)
-                time.sleep(0.08)
+                    return None
+                data = r.json()
+                if not data.get('movieList'):
+                    return None
+                return {
+                    'ct1': '22', 'ct2': str(ct2), 'ct3': f'{ct3:02d}',
+                    'mc': mc,
+                    'confDate': data.get('confDate', ''),
+                    'confOpenTime': data.get('confOpenTime', ''),
+                    'confTitle': data.get('confTitle', ''),
+                    'sami': data.get('sami', '0'),
+                    'minutes': data.get('minutes', '0'),
+                }
+            except Exception:
+                return None
+
+        combos = [(ct2, ct3)
+                  for ct2 in range(CT1_22_START, max_ct2 + 3)
+                  for ct3 in range(1, 20)]
+
+        self.update_status(f"{comm_name} 22대 전체 스캔 중 ({len(combos)}개 조합)...")
+
+        with ThreadPoolExecutor(max_workers=20) as ex:
+            results = list(ex.map(check_meeting_22, combos))
+
+        for conf in results:
+            if conf:
+                key = f"22_{conf['ct2']}_{conf['ct3']}"
+                if key not in seen:
+                    seen.add(key)
+                    all_confs.append(conf)
+
+        # ── 이전 대수: mainList로 최신 21건 ─────────────────────────
+        for ct1 in range(21, 15, -1):
+            try:
+                vv = int(time.time())
+                r = requests.get(f"{W3_BASE}/main/service/list.do",
+                                 params={'cmd': 'mainList', 'menu': menu, 'mc': mc,
+                                         'ct1': str(ct1), 'pageSize': '21', 'vv': vv},
+                                 headers=W3_HEADERS, timeout=15)
+                for c in r.json().get('confList', []):
+                    key = f"{c.get('ct1')}_{c.get('ct2')}_{c.get('ct3')}"
+                    if key not in seen:
+                        seen.add(key)
+                        all_confs.append(c)
             except Exception:
                 continue
 
