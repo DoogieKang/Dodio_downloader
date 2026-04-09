@@ -49,6 +49,15 @@ DOWNLOAD_DIR = os.path.join(os.path.expanduser("~"), "seminars_download")
 JSON_FILE = os.path.join(DOWNLOAD_DIR, "all_seminars.json")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
+# --- W3 영상회의록시스템 (상임위) ---
+W3_BASE = "https://w3.assembly.go.kr"
+W3_HEADERS = {
+    'Accept': 'application/json, text/plain, */*',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                  '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Referer': 'https://w3.assembly.go.kr/main/index.do',
+}
+
 # --- Setup Logging ---
 LOG_FILE = os.path.join(DOWNLOAD_DIR, "seminar_downloader.log")
 logging.basicConfig(filename=LOG_FILE, level=logging.DEBUG, 
@@ -84,6 +93,17 @@ class SeminarGUI:
         self.selenium_user_agent = tk.StringVar(value="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36")
         self.selenium_extractor = None # Will be initialized when needed
 
+        # --- W3 상임위 탭 상태 ---
+        self.w3_committee_map = {}   # mc -> name
+        self._w3_name_to_mc = {}     # name -> mc
+        self.w3_conf_cache = []
+        self.w3_conf_data = {}       # tree iid -> conf dict
+        self.w3_movie_data = []      # 현재 클립 목록
+        self.w3_sami_is = '0'
+        self.w3_current_conf = None
+        self.w3_fetch_thread = None
+        self.w3_download_thread = None
+
         self.content_list_url = "https://vplatform.assembly.go.kr/api/api/cms/content/contentList"
 
         # Store headers globally for reuse in download function
@@ -110,14 +130,20 @@ class SeminarGUI:
         self.downloader_tab = ttk.Frame(self.notebook, padding="10")
         self.press_conference_tab = ttk.Frame(self.notebook, padding="10")
 
+        self.committee_tab = ttk.Frame(self.notebook, padding="10")
+
         self.notebook.add(self.downloader_tab, text='세미나')
         self.notebook.add(self.press_conference_tab, text='기자회견')
+        self.notebook.add(self.committee_tab, text='상임위')
 
         # --- Build Downloader Tab ---
         self._create_downloader_tab(self.downloader_tab)
 
         # --- Build Press Conference Tab ---
         self._create_press_conference_tab(self.press_conference_tab)
+
+        # --- Build Committee Tab ---
+        self._create_committee_tab(self.committee_tab)
 
         # --- Status Bar ---
         self.status_bar = ttk.Label(master, text="준비. 로컬 목록을 불러옵니다.", relief=tk.SUNKEN, anchor=tk.W)
@@ -207,6 +233,98 @@ class SeminarGUI:
 
     def _create_press_conference_tab(self, parent):
         self._create_content_list_tab(parent, "PRESS")
+
+    def _create_committee_tab(self, parent):
+        """상임위 탭 UI를 생성합니다 (w3.assembly.go.kr)."""
+        # ── 컨트롤 바 ──
+        ctrl = ttk.Frame(parent)
+        ctrl.pack(fill=tk.X)
+
+        self.w3_refresh_btn = ttk.Button(ctrl, text="상임위 목록 새로고침",
+                                         command=self._start_w3_committee_fetch)
+        self.w3_refresh_btn.pack(side=tk.LEFT, padx=(0, 8))
+
+        ttk.Button(ctrl, text="다운로드 폴더 열기",
+                   command=self.open_download_folder).pack(side=tk.LEFT, padx=(0, 8))
+
+        self.w3_progress_bar = ttk.Progressbar(ctrl, orient="horizontal",
+                                               length=200, mode="determinate")
+        self.w3_progress_bar.pack(side=tk.LEFT, pady=5)
+
+        # ── 상임위 선택 + 날짜 검색 ──
+        sel = ttk.Frame(parent)
+        sel.pack(fill=tk.X, pady=(8, 0))
+
+        ttk.Label(sel, text="상임위:").pack(side=tk.LEFT)
+        self.w3_comm_var = tk.StringVar()
+        self.w3_comm_combo = ttk.Combobox(sel, textvariable=self.w3_comm_var,
+                                           state='readonly', width=28)
+        self.w3_comm_combo.pack(side=tk.LEFT, padx=(4, 16))
+        self.w3_comm_combo.bind('<<ComboboxSelected>>', self._on_w3_committee_selected)
+
+        ttk.Label(sel, text="기간:").pack(side=tk.LEFT)
+        self.w3_start_var = tk.StringVar(value="2024-01-01")
+        ttk.Entry(sel, textvariable=self.w3_start_var, width=12).pack(side=tk.LEFT, padx=(4, 2))
+        ttk.Label(sel, text="~").pack(side=tk.LEFT, padx=2)
+        self.w3_end_var = tk.StringVar(value=datetime.today().strftime('%Y-%m-%d'))
+        ttk.Entry(sel, textvariable=self.w3_end_var, width=12).pack(side=tk.LEFT, padx=(2, 8))
+
+        self.w3_search_btn = ttk.Button(sel, text="검색",
+                                        command=self._on_w3_committee_selected)
+        self.w3_search_btn.pack(side=tk.LEFT)
+
+        # ── 회의 목록 Treeview ──
+        conf_outer = ttk.Frame(parent, padding=(0, 6, 0, 0))
+        conf_outer.pack(fill=tk.BOTH, expand=True)
+
+        cols = ("date", "title", "sami")
+        self.w3_conf_tree = ttk.Treeview(conf_outer, columns=cols,
+                                          show="headings", height=12)
+        self.w3_conf_tree.heading("date",  text="날짜",     anchor=tk.W)
+        self.w3_conf_tree.heading("title", text="회의 제목", anchor=tk.W)
+        self.w3_conf_tree.heading("sami",  text="자막",     anchor=tk.CENTER)
+        self.w3_conf_tree.column("date",  width=150, stretch=False)
+        self.w3_conf_tree.column("title", width=780)
+        self.w3_conf_tree.column("sami",  width=50,  stretch=False, anchor=tk.CENTER)
+
+        vsb = ttk.Scrollbar(conf_outer, orient="vertical",
+                             command=self.w3_conf_tree.yview)
+        self.w3_conf_tree.configure(yscrollcommand=vsb.set)
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        self.w3_conf_tree.pack(fill=tk.BOTH, expand=True)
+        self.w3_conf_tree.bind('<<TreeviewSelect>>', self._on_w3_conf_selected)
+
+        # ── 클립 목록 + 다운로드 버튼 ──
+        bot = ttk.Frame(parent)
+        bot.pack(fill=tk.X, pady=(8, 0))
+
+        clip_lf = ttk.LabelFrame(bot, text="클립 선택  (Ctrl+클릭으로 복수 선택)", padding=6)
+        clip_lf.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        clip_vsb = ttk.Scrollbar(clip_lf, orient=tk.VERTICAL)
+        self.w3_clip_listbox = tk.Listbox(clip_lf, selectmode=tk.EXTENDED,
+                                           yscrollcommand=clip_vsb.set, height=6)
+        clip_vsb.config(command=self.w3_clip_listbox.yview)
+        clip_vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        self.w3_clip_listbox.pack(fill=tk.BOTH, expand=True)
+
+        dl_frame = ttk.Frame(bot)
+        dl_frame.pack(side=tk.LEFT, padx=(12, 0), anchor=tk.N)
+
+        self.w3_dl_video_btn = ttk.Button(dl_frame, text="영상 다운로드",
+                                           command=self._start_w3_video_download,
+                                           state=tk.DISABLED)
+        self.w3_dl_video_btn.pack(fill=tk.X, pady=(0, 4))
+
+        self.w3_dl_txt_btn = ttk.Button(dl_frame, text="자막 다운로드 (TXT)",
+                                         command=lambda: self._start_w3_subtitle_download('txt'),
+                                         state=tk.DISABLED)
+        self.w3_dl_txt_btn.pack(fill=tk.X, pady=(0, 4))
+
+        self.w3_dl_srt_btn = ttk.Button(dl_frame, text="자막 다운로드 (SRT)",
+                                         command=lambda: self._start_w3_subtitle_download('srt'),
+                                         state=tk.DISABLED)
+        self.w3_dl_srt_btn.pack(fill=tk.X)
 
     def create_treeview(self, parent):
         """Treeview 위젯 생성 및 설정"""
@@ -913,6 +1031,365 @@ class SeminarGUI:
             self.master.after(0, lambda ct=seminar_data['content_type']: self.on_content_select(event=None, content_type_filter=ct))
         logging.debug("_download_subtitle_with_selenium finished.")
 
+    # ──────────────────────────────────────────────────────────────
+    # 상임위 탭 (w3.assembly.go.kr)
+    # ──────────────────────────────────────────────────────────────
+
+    def _start_w3_committee_fetch(self):
+        if self.w3_fetch_thread and self.w3_fetch_thread.is_alive():
+            return
+        self.w3_refresh_btn.config(state=tk.DISABLED)
+        self.w3_comm_combo.config(values=[])
+        self.w3_comm_var.set('')
+        self.update_status("상임위 목록 수집 중 (최대 20초)...")
+        self.w3_fetch_thread = threading.Thread(
+            target=self._fetch_w3_committees, daemon=True)
+        self.w3_fetch_thread.start()
+
+    def _fetch_w3_committees(self):
+        """menu 코드 1-120을 병렬 스캔하여 상임위 목록을 수집합니다."""
+        found = {}  # mc -> name
+
+        def check(code):
+            try:
+                vv = int(time.time())
+                url = (f"{W3_BASE}/main/service/list.do"
+                       f"?cmd=mainList&menu={code}&vv={vv}")
+                r = requests.get(url, headers=W3_HEADERS, timeout=8)
+                if r.status_code != 200:
+                    return
+                data = r.json()
+                for c in data.get('commList', []):
+                    mc = c.get('mc', '').strip()
+                    nm = (c.get('commFullName') or c.get('commName', '')).strip()
+                    if mc and nm:
+                        found[mc] = nm
+                # commList 없을 때 상위 mc/thisName 활용
+                if not data.get('commList') and data.get('confList'):
+                    mc = (data.get('mc') or str(code)).strip()
+                    nm = (data.get('thisName') or data.get('menuName', '')).strip()
+                    if nm and mc and mc not in found:
+                        found[mc] = nm
+            except Exception:
+                pass
+
+        with ThreadPoolExecutor(max_workers=15) as ex:
+            list(ex.map(check, range(1, 121)))
+
+        self.w3_committee_map = found
+        self._w3_name_to_mc = {v: k for k, v in found.items()}
+        sorted_names = sorted(found.values())
+        self.master.after(0, lambda: self._update_w3_comm_dropdown(sorted_names))
+        self.update_status(f"상임위 {len(found)}개 수집 완료.")
+
+    def _update_w3_comm_dropdown(self, names):
+        self.w3_comm_combo.config(values=names)
+        self.w3_refresh_btn.config(state=tk.NORMAL)
+
+    def _on_w3_committee_selected(self, event=None):
+        name = self.w3_comm_var.get()
+        if not name:
+            return
+        mc = self._w3_name_to_mc.get(name, '')
+        if not mc:
+            return
+        self.w3_search_btn.config(state=tk.DISABLED)
+        self.w3_conf_tree.delete(*self.w3_conf_tree.get_children())
+        self.w3_clip_listbox.delete(0, tk.END)
+        self.w3_movie_data = []
+        self._set_w3_dl_state(tk.DISABLED)
+        self.update_status(f"회의 목록 수집 중: {name}...")
+
+        start = self.w3_start_var.get().replace('-', '')
+        end   = self.w3_end_var.get().replace('-', '')
+        t = threading.Thread(target=self._fetch_w3_conferences,
+                              args=(mc, name, start, end), daemon=True)
+        t.start()
+
+    def _fetch_w3_conferences(self, mc, comm_name, start_dt, end_dt):
+        """회의 목록을 가져옵니다. searchList → mainList 순으로 시도합니다."""
+        all_confs = []
+        seen = set()
+
+        def add_confs(confs):
+            for c in confs:
+                key = f"{c.get('ct1')}_{c.get('ct2')}_{c.get('ct3')}"
+                if key not in seen:
+                    seen.add(key)
+                    all_confs.append(c)
+
+        vv = int(time.time())
+
+        # 1) searchList (날짜 필터 지원)
+        try:
+            url = (f"{W3_BASE}/main/service/list.do?cmd=searchList"
+                   f"&mc_param={mc}&mc_param2={mc}"
+                   f"&searchUpdateDate={start_dt}&searchUpdateDate2={end_dt}"
+                   f"&searchType_id=&searchSelect=&searchString=&vv={vv}")
+            r = requests.get(url, headers=W3_HEADERS, timeout=15)
+            if r.status_code == 200:
+                confs = [c for c in r.json().get('confList', [])
+                         if not c.get('mc') or c.get('mc') == mc]
+                add_confs(confs)
+        except Exception as e:
+            logging.debug(f"W3 searchList error: {e}")
+
+        # 2) mainList fallback (페이지네이션)
+        if not all_confs:
+            for page in range(1, 51):
+                try:
+                    url = (f"{W3_BASE}/main/service/list.do"
+                           f"?cmd=mainList&menu={mc}&mc={mc}"
+                           f"&curPages={page}&vv={vv}")
+                    r = requests.get(url, headers=W3_HEADERS, timeout=15)
+                    if r.status_code != 200:
+                        break
+                    confs = r.json().get('confList', [])
+                    if not confs:
+                        break
+                    before = len(all_confs)
+                    add_confs(confs)
+                    if len(all_confs) == before:
+                        break  # 중복만 있으면 종료
+                    time.sleep(0.05)
+                except Exception:
+                    break
+
+        # 날짜 필터 (client-side)
+        if start_dt or end_dt:
+            def in_range(c):
+                d = c.get('confDate', '').replace('-', '')
+                return (not start_dt or d >= start_dt) and (not end_dt or d <= end_dt)
+            all_confs = [c for c in all_confs if in_range(c)]
+
+        all_confs.sort(key=lambda x: (x.get('confDate', ''), x.get('confOpenTime', '')),
+                       reverse=True)
+
+        self.w3_conf_cache = all_confs
+        self.master.after(0, self._populate_w3_conf_tree)
+        self.master.after(0, self.w3_search_btn.config, {'state': tk.NORMAL})
+        self.update_status(f"{comm_name} 회의 {len(all_confs)}건 수집 완료.")
+
+    def _populate_w3_conf_tree(self):
+        self.w3_conf_tree.delete(*self.w3_conf_tree.get_children())
+        self.w3_conf_data = {}
+        for c in self.w3_conf_cache:
+            date_str = c.get('confDate', 'N/A')
+            open_time = c.get('confOpenTime', '')
+            display_date = f"{date_str} {open_time}".strip()
+            title = c.get('confTitle', 'N/A')
+            sami  = "✓" if c.get('sami') == '1' else ''
+            iid = self.w3_conf_tree.insert("", "end",
+                                            values=(display_date, title, sami))
+            self.w3_conf_data[iid] = c
+
+    def _on_w3_conf_selected(self, event=None):
+        sel = self.w3_conf_tree.selection()
+        if not sel:
+            return
+        conf = self.w3_conf_data.get(sel[0])
+        if not conf:
+            return
+        self.w3_current_conf = conf
+        self.w3_clip_listbox.delete(0, tk.END)
+        self.w3_movie_data = []
+        self._set_w3_dl_state(tk.DISABLED)
+        self.update_status(f"클립 목록 수집 중: {conf.get('confTitle', '')}...")
+        t = threading.Thread(target=self._fetch_w3_clips, args=(conf,), daemon=True)
+        t.start()
+
+    def _fetch_w3_clips(self, conf):
+        mc  = conf.get('mc', '')
+        ct1 = conf.get('ct1', '')
+        ct2 = conf.get('ct2', '')
+        ct3 = conf.get('ct3', '')
+        try:
+            vv  = int(time.time())
+            url = (f"{W3_BASE}/main/service/movie.do?cmd=movieInfo"
+                   f"&mc={mc}&ct1={ct1}&ct2={ct2}&ct3={ct3}&vv={vv}")
+            r = requests.get(url, headers=W3_HEADERS, timeout=15)
+            data = r.json()
+            movie_list = data.get('movieList', [])
+            sami_is    = data.get('sami', '0')
+            self.w3_movie_data = movie_list
+            self.w3_sami_is    = sami_is
+            self.master.after(0, lambda: self._populate_w3_clips(movie_list, sami_is))
+        except Exception as e:
+            logging.error(f"W3 clip fetch error: {e}", exc_info=True)
+            self.update_status(f"클립 목록 수집 오류: {e}")
+
+    def _populate_w3_clips(self, movie_list, sami_is):
+        self.w3_clip_listbox.delete(0, tk.END)
+        if not movie_list:
+            self.w3_clip_listbox.insert(tk.END, "(영상 없음)")
+            return
+        for m in movie_list:
+            play  = m.get('playTime', '')
+            title = m.get('movieTitle', '')
+            self.w3_clip_listbox.insert(tk.END, f"[{play}]  {title}")
+        self._set_w3_dl_state(tk.NORMAL, has_sami=(sami_is == '1'))
+        self.update_status(f"클립 {len(movie_list)}개 로드 완료.")
+
+    def _set_w3_dl_state(self, state, has_sami=False):
+        self.w3_dl_video_btn.config(state=state)
+        sami_state = tk.NORMAL if (state == tk.NORMAL and has_sami) else tk.DISABLED
+        self.w3_dl_txt_btn.config(state=sami_state)
+        self.w3_dl_srt_btn.config(state=sami_state)
+
+    # ── 영상 다운로드 ──
+
+    def _start_w3_video_download(self):
+        idxs = list(self.w3_clip_listbox.curselection())
+        if not idxs:
+            messagebox.showwarning("선택 없음", "다운로드할 클립을 선택해주세요.")
+            return
+        if self.w3_download_thread and self.w3_download_thread.is_alive():
+            messagebox.showwarning("진행 중", "이미 다운로드 중입니다.")
+            return
+        clips = [self.w3_movie_data[i] for i in idxs if i < len(self.w3_movie_data)]
+        self.w3_download_thread = threading.Thread(
+            target=self._w3_download_videos,
+            args=(self.w3_current_conf, clips), daemon=True)
+        self.w3_download_thread.start()
+
+    def _w3_download_videos(self, conf, clips):
+        mc  = conf.get('mc', '')
+        ct1 = conf.get('ct1', '')
+        ct2 = conf.get('ct2', '')
+        ct3 = conf.get('ct3', '')
+        conf_title = self._sanitize_filename(conf.get('confTitle', 'unknown'))
+        conf_date  = conf.get('confDate', '').replace('-', '')
+
+        self.master.after(0, self.w3_progress_bar.config, {'mode': 'indeterminate'})
+        self.master.after(0, self.w3_progress_bar.start)
+
+        for clip in clips:
+            no         = clip.get('no')
+            wv         = clip.get('wv', 1)
+            clip_title = self._sanitize_filename(clip.get('movieTitle', f'clip_{no}'))
+            filename   = os.path.join(
+                DOWNLOAD_DIR, f"{conf_date}_{conf_title}_{clip_title}.mp4")
+
+            if os.path.exists(filename):
+                self.update_status(f"이미 존재: {os.path.basename(filename)}")
+                continue
+
+            try:
+                vv  = int(time.time())
+                url = (f"{W3_BASE}/main/service/movie.do?cmd=fileInfo"
+                       f"&mc={mc}&ct1={ct1}&ct2={ct2}&ct3={ct3}"
+                       f"&no={no}&wv={wv}&xreferer=&vv={vv}")
+                r   = requests.get(url, headers=W3_HEADERS, timeout=15)
+                fp  = r.json().get('filePath', {})
+
+                # 최고화질 선택 (720p > 480p > 240p)
+                m3u8_path = fp.get('720p') or fp.get('480p') or fp.get('240p')
+                if not m3u8_path and isinstance(fp, dict):
+                    default_key = fp.get('default', '')
+                    m3u8_path   = fp.get(default_key, '')
+
+                if not m3u8_path:
+                    self.update_status(f"스트림 URL 없음: {clip_title}")
+                    continue
+
+                m3u8_url = ('https:' + m3u8_path
+                            if m3u8_path.startswith('//') else m3u8_path)
+
+                self.update_status(f"다운로드 중: {os.path.basename(filename)}...")
+                cmd = [self._get_ffmpeg_path(), '-i', m3u8_url,
+                       '-c', 'copy', '-bsf:a', 'aac_adtstoasc',
+                       '-y', '-loglevel', 'error', filename]
+                extra = {}
+                if sys.platform == 'win32':
+                    extra['creationflags'] = subprocess.CREATE_NO_WINDOW
+                subprocess.run(cmd, check=True, capture_output=True,
+                               text=True, encoding='utf-8', **extra)
+
+                if os.path.exists(filename):
+                    size = os.path.getsize(filename) / (1024 * 1024)
+                    self.update_status(
+                        f"완료: {os.path.basename(filename)} ({size:.1f}MB)")
+                else:
+                    self.update_status(f"다운로드 실패: {os.path.basename(filename)}")
+
+            except subprocess.CalledProcessError as e:
+                err = (e.stderr.strip().splitlines()[-1]
+                       if e.stderr and e.stderr.strip() else str(e))
+                self.update_status(f"ffmpeg 오류: {err}")
+                self.master.after(0, messagebox.showerror, "다운로드 오류",
+                                  f"{clip_title}\n\n{err}")
+            except Exception as e:
+                logging.error(f"W3 video download error: {e}", exc_info=True)
+                self.update_status(f"오류: {e}")
+
+        self.master.after(0, self.w3_progress_bar.stop)
+        self.master.after(0, self.w3_progress_bar.config,
+                          {'mode': 'determinate', 'value': 0})
+
+    # ── 자막 다운로드 ──
+
+    def _start_w3_subtitle_download(self, fmt='txt'):
+        idxs = list(self.w3_clip_listbox.curselection())
+        if not idxs:
+            messagebox.showwarning("선택 없음", "자막을 받을 클립을 선택해주세요.")
+            return
+        if self.w3_download_thread and self.w3_download_thread.is_alive():
+            messagebox.showwarning("진행 중", "이미 다운로드 중입니다.")
+            return
+        clips = [self.w3_movie_data[i] for i in idxs if i < len(self.w3_movie_data)]
+        self.w3_download_thread = threading.Thread(
+            target=self._w3_download_subtitles,
+            args=(self.w3_current_conf, clips, fmt), daemon=True)
+        self.w3_download_thread.start()
+
+    def _w3_download_subtitles(self, conf, clips, fmt):
+        mc  = conf.get('mc', '')
+        ct1 = conf.get('ct1', '')
+        ct2 = conf.get('ct2', '')
+        ct3 = conf.get('ct3', '')
+        conf_title = self._sanitize_filename(conf.get('confTitle', 'unknown'))
+        conf_date  = conf.get('confDate', '').replace('-', '')
+
+        self.master.after(0, self.w3_progress_bar.config, {'mode': 'indeterminate'})
+        self.master.after(0, self.w3_progress_bar.start)
+
+        for clip in clips:
+            no         = clip.get('no')
+            clip_title = self._sanitize_filename(clip.get('movieTitle', f'clip_{no}'))
+            base       = os.path.join(
+                DOWNLOAD_DIR, f"{conf_date}_{conf_title}_{clip_title}")
+            try:
+                vv  = int(time.time())
+                url = (f"{W3_BASE}/main/service/smi.do?cmd=smiList"
+                       f"&no={no}&mc={mc}&ct1={ct1}&ct2={ct2}&ct3={ct3}"
+                       f"&v=20220203&vv={vv}")
+                r        = requests.get(url, headers=W3_HEADERS, timeout=15)
+                smi_list = r.json().get('smiList', [])
+
+                if not smi_list:
+                    self.update_status(f"자막 없음: {clip_title}")
+                    continue
+
+                if fmt == 'srt':
+                    content = self._smilist_to_srt(smi_list)
+                    outfile = base + '.srt'
+                else:
+                    content = self._smilist_to_txt(smi_list)
+                    outfile = base + '.txt'
+
+                with open(outfile, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                self.update_status(
+                    f"자막 저장: {os.path.basename(outfile)} ({len(smi_list)}줄)")
+
+            except Exception as e:
+                logging.error(f"W3 subtitle download error: {e}", exc_info=True)
+                self.update_status(f"자막 오류: {e}")
+
+        self.master.after(0, self.w3_progress_bar.stop)
+        self.master.after(0, self.w3_progress_bar.config,
+                          {'mode': 'determinate', 'value': 0})
+
     def _date_prefix(self, seminar_data):
         """날짜+시간을 파일명 prefix로 변환 (예: 202603101500_)"""
         raw = seminar_data.get('date', '')
@@ -927,21 +1404,28 @@ class SeminarGUI:
     def _check_for_updates(self):
         """GitHub Releases에서 최신 버전을 확인하고 업데이트가 있으면 팝업을 띄웁니다."""
         try:
-            resp = requests.get(UPDATE_CHECK_URL, timeout=5, headers={"Accept": "application/vnd.github+json"})
+            resp = requests.get(UPDATE_CHECK_URL, timeout=5,
+                                headers={"Accept": "application/vnd.github+json"})
             resp.raise_for_status()
             data = resp.json()
-            # tag_name 예: "v1.1" → "1.1"
             latest = data.get("tag_name", "").lstrip("v")
             if not latest or latest <= APP_VERSION:
                 return
-            # 첨부 파일(.exe) URL 추출
+
+            # 플랫폼별 첨부 파일 탐색
             installer_url = ""
             for asset in data.get("assets", []):
-                if asset["name"].endswith(".exe"):
+                name = asset["name"]
+                if sys.platform == "win32" and name.endswith(".exe"):
                     installer_url = asset["browser_download_url"]
                     break
+                if sys.platform == "darwin" and name.endswith(".dmg"):
+                    installer_url = asset["browser_download_url"]
+                    break
+
             if not installer_url:
                 return
+
             self.master.after(0, lambda: self._prompt_update(latest, installer_url))
         except Exception as e:
             logging.debug(f"업데이트 확인 실패 (무시): {e}")
@@ -950,24 +1434,27 @@ class SeminarGUI:
         """업데이트 팝업을 띄우고 사용자가 확인하면 자동 설치합니다."""
         answer = messagebox.askyesno(
             "업데이트 알림",
-            f"새 버전이 있습니다.\n\n현재: {APP_VERSION}  →  최신: {latest_version}\n\n지금 업데이트하시겠습니까?\n(확인을 누르면 자동으로 설치됩니다)"
+            f"새 버전이 있습니다.\n\n현재: {APP_VERSION}  →  최신: {latest_version}\n\n"
+            f"지금 업데이트하시겠습니까?\n(확인을 누르면 자동으로 설치됩니다)"
         )
         if not answer:
             return
-
         self.update_status("업데이트 다운로드 중...")
-        threading.Thread(target=self._download_and_install_update, args=(installer_url,), daemon=True).start()
+        threading.Thread(target=self._download_and_install_update,
+                         args=(installer_url,), daemon=True).start()
 
     def _download_and_install_update(self, installer_url):
-        """인스톨러를 다운로드하고 조용히 실행합니다."""
+        """인스톨러/DMG를 다운로드하고 플랫폼에 맞게 자동 설치합니다."""
         try:
             resp = requests.get(installer_url, stream=True, timeout=60)
             resp.raise_for_status()
 
-            tmp_path = os.path.join(tempfile.gettempdir(), "DodioDownloader_Setup.exe")
-            total = int(resp.headers.get('content-length', 0))
-            downloaded = 0
+            ext      = ".dmg" if sys.platform == "darwin" else ".exe"
+            tmp_name = f"DodioDownloader_Setup{ext}"
+            tmp_path = os.path.join(tempfile.gettempdir(), tmp_name)
 
+            total      = int(resp.headers.get('content-length', 0))
+            downloaded = 0
             with open(tmp_path, 'wb') as f:
                 for chunk in resp.iter_content(chunk_size=8192):
                     if chunk:
@@ -975,48 +1462,73 @@ class SeminarGUI:
                         downloaded += len(chunk)
                         if total:
                             pct = int(downloaded / total * 100)
-                            self.master.after(0, self.update_status, f"업데이트 다운로드 중... {pct}%")
+                            self.master.after(0, self.update_status,
+                                              f"업데이트 다운로드 중... {pct}%")
 
             self.master.after(0, self.update_status, "업데이트 설치 중...")
-            try:
-                # 앱 종료 후 인스톨러 실행을 위한 배치 파일 작성
-                # (앱이 완전히 닫힌 뒤 인스톨러가 파일을 덮어쓸 수 있도록 3초 대기)
+
+            if sys.platform == "win32":
+                # Windows: .bat → 인스톨러 실행 후 재시작
                 bat_path = os.path.join(tempfile.gettempdir(), "dodio_update.bat")
-                app_path = sys.executable
-                with open(bat_path, 'w', encoding='mbcs') as f:  # mbcs: Windows 로컬 인코딩 (한글 경로 대응)
+                with open(bat_path, 'w', encoding='mbcs') as f:
                     f.write(
                         f'@echo off\r\n'
                         f'timeout /t 3 /nobreak >nul\r\n'
                         f'start /wait "" "{tmp_path}" /VERYSILENT /NORESTART\r\n'
-                        f'start "" "{app_path}"\r\n'
+                        f'start "" "{sys.executable}"\r\n'
                     )
                 subprocess.Popen(['cmd', '/c', 'start', '', '/b', 'cmd', '/c', bat_path])
-                # 배치 파일 실행 후 앱 종료
                 self.master.after(500, self.master.destroy)
-            except Exception as e:
-                logging.error(f"인스톨러 실행 실패: {e}")
-                self.master.after(0, messagebox.showerror, "설치 실패",
-                    f"인스톨러 실행에 실패했습니다:\n{e}\n\n"
-                    f"직접 실행해주세요:\n{tmp_path}")
+
+            elif sys.platform == "darwin":
+                # macOS: DMG 마운트 → .app 교체 → 재시작
+                if not getattr(sys, 'frozen', False):
+                    # 개발 환경: DMG만 열어줌
+                    subprocess.Popen(['open', tmp_path])
+                    return
+
+                # sys.executable = .../DodioDownloader.app/Contents/MacOS/DodioDownloader
+                app_bundle  = os.path.normpath(
+                    os.path.join(os.path.dirname(sys.executable), '..', '..'))
+                install_dir = os.path.dirname(app_bundle)
+                mnt_path    = os.path.join(tempfile.gettempdir(), "DodioMnt")
+                sh_path     = os.path.join(tempfile.gettempdir(), "dodio_update.sh")
+
+                with open(sh_path, 'w') as f:
+                    f.write('#!/bin/bash\n')
+                    f.write('sleep 3\n')
+                    f.write(f'hdiutil attach "{tmp_path}" '
+                            f'-mountpoint "{mnt_path}" -nobrowse -quiet\n')
+                    f.write(f'cp -R "{mnt_path}/DodioDownloader.app" "{install_dir}/"\n')
+                    f.write(f'hdiutil detach "{mnt_path}" -quiet\n')
+                    f.write(f'open "{install_dir}/DodioDownloader.app"\n')
+
+                os.chmod(sh_path, 0o755)
+                subprocess.Popen(['bash', sh_path])
+                self.master.after(500, self.master.destroy)
 
         except Exception as e:
             logging.error(f"업데이트 다운로드 실패: {e}")
-            self.master.after(0, messagebox.showerror, "업데이트 실패", f"다운로드 중 오류가 발생했습니다:\n{e}")
+            self.master.after(0, messagebox.showerror, "업데이트 실패",
+                              f"다운로드 중 오류가 발생했습니다:\n{e}")
 
     def _get_ffmpeg_path(self):
-        """번들 실행 파일 옆의 ffmpeg.exe를 우선 사용하고, 없으면 PATH에서 찾습니다."""
+        """번들 실행 파일 옆의 ffmpeg(/.exe)를 우선 사용하고, 없으면 PATH에서 찾습니다."""
+        ffmpeg_name = 'ffmpeg.exe' if sys.platform == 'win32' else 'ffmpeg'
         candidates = []
 
         if getattr(sys, 'frozen', False):
-            # PyInstaller 빌드: 실행 파일과 같은 폴더
+            # PyInstaller 빌드
             exe_dir = os.path.dirname(sys.executable)
-            candidates.append(os.path.join(exe_dir, 'ffmpeg.exe'))
-            # PyInstaller 6.x _internal 폴더 대응
-            candidates.append(os.path.join(exe_dir, '_internal', 'ffmpeg.exe'))
+            candidates.append(os.path.join(exe_dir, ffmpeg_name))
+            # PyInstaller 6.x _internal 폴더 대응 (Windows)
+            candidates.append(os.path.join(exe_dir, '_internal', ffmpeg_name))
+            # macOS .app 번들: Contents/MacOS/ 아래
+            candidates.append(os.path.join(exe_dir, '..', 'MacOS', ffmpeg_name))
         else:
             # 개발 환경: 스크립트와 같은 폴더
             script_dir = os.path.dirname(os.path.abspath(__file__))
-            candidates.append(os.path.join(script_dir, 'ffmpeg.exe'))
+            candidates.append(os.path.join(script_dir, ffmpeg_name))
 
         for path in candidates:
             if os.path.isfile(path):
@@ -1105,6 +1617,26 @@ class SeminarGUI:
         )
         if filepath:
             self.selenium_driver_path.set(filepath)
+
+    @staticmethod
+    def extract_text_from_smi(filepath):
+        """SMI 파일에서 순수 텍스트를 추출합니다."""
+        try:
+            import html as html_mod
+            with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+            texts = re.findall(r'<SYNC[^>]*><P[^>]*>(.*?)</P>',
+                               content, re.IGNORECASE | re.DOTALL)
+            lines = []
+            for t in texts:
+                t = re.sub(r'<[^>]+>', '', t).strip()
+                t = html_mod.unescape(t)
+                if t and t.lower() != '&nbsp;':
+                    lines.append(t)
+            return '\n'.join(lines) if lines else None
+        except Exception as e:
+            logging.error(f"SMI text extraction error: {e}", exc_info=True)
+            return None
 
     def update_status(self, text):
         self.master.after(0, self.status_bar.config, {'text': text})

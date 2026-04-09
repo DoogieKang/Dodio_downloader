@@ -1,4 +1,4 @@
-name: Build Windows Installer
+name: Build
 
 on:
   workflow_dispatch:
@@ -9,7 +9,8 @@ on:
         default: '1.0'
 
 jobs:
-  build:
+  build-windows:
+    name: Windows 빌드 (.exe)
     runs-on: windows-latest
     permissions:
       contents: write
@@ -33,7 +34,7 @@ jobs:
           (Get-Content installer.iss) -replace '#define AppVersion ".*"', "#define AppVersion `"$v`"" | Set-Content installer.iss
           (Get-Content seminar_downloader.py) -replace 'APP_VERSION = ".*"', "APP_VERSION = `"$v`"" | Set-Content seminar_downloader.py
 
-      - name: ffmpeg 다운로드
+      - name: ffmpeg 다운로드 (Windows)
         run: |
           mkdir build_temp
           curl -L "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -o ffmpeg.zip
@@ -54,3 +55,54 @@ jobs:
           tag_name: v${{ github.event.inputs.version }}
           name: v${{ github.event.inputs.version }}
           files: installer_output/DodioDownloader_Setup.exe
+
+  build-mac:
+    name: macOS 빌드 (.dmg)
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Python 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 패키지 설치
+        run: pip install -r requirements.txt pyinstaller
+
+      - name: 버전 업데이트
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          sed -i '' "s/APP_VERSION = \".*\"/APP_VERSION = \"$VERSION\"/" seminar_downloader.py
+          sed -i '' "s/'CFBundleShortVersionString': '.*'/'CFBundleShortVersionString': '$VERSION'/" seminar_downloader_mac.spec
+
+      - name: ffmpeg 다운로드 (macOS)
+        run: |
+          mkdir -p build_temp
+          brew install ffmpeg
+          cp "$(which ffmpeg)" build_temp/ffmpeg
+          chmod +x build_temp/ffmpeg
+
+      - name: PyInstaller 빌드 (macOS)
+        run: pyinstaller seminar_downloader_mac.spec --noconfirm
+
+      - name: DMG 생성
+        run: |
+          mkdir -p dist/dmg
+          cp -r "dist/DodioDownloader.app" dist/dmg/
+          hdiutil create \
+            -volname "DodioDownloader" \
+            -srcfolder dist/dmg \
+            -ov -format UDZO \
+            "dist/DodioDownloader.dmg"
+
+      - name: GitHub Releases에 업로드
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.event.inputs.version }}
+          name: v${{ github.event.inputs.version }}
+          files: dist/DodioDownloader.dmg
