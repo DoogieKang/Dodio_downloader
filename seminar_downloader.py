@@ -1182,6 +1182,13 @@ class SeminarGUI:
                     seen.add(key)
                     all_confs.append(conf)
 
+        # 22대 mainList 보완: 국정감사 등 ct3가 문자형(AB, AC...)인 회의는 숫자 스캔에서 누락됨
+        for c in recent22:
+            key = f"{c.get('ct1')}_{c.get('ct2')}_{c.get('ct3')}"
+            if key not in seen:
+                seen.add(key)
+                all_confs.append(c)
+
         # ── 이전 대수: mainList로 최신 21건 ─────────────────────────
         for ct1 in range(21, 15, -1):
             try:
