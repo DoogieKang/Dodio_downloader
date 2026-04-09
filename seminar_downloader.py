@@ -145,6 +145,10 @@ class SeminarGUI:
         # --- Build Committee Tab ---
         self._create_committee_tab(self.committee_tab)
 
+        # --- Auto-load committee list on first tab switch ---
+        self._committee_loaded = False
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+
         # --- Status Bar ---
         self.status_bar = ttk.Label(master, text="준비. 로컬 목록을 불러옵니다.", relief=tk.SUNKEN, anchor=tk.W)
         self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
@@ -1035,6 +1039,13 @@ class SeminarGUI:
     # 상임위 탭 (w3.assembly.go.kr)
     # ──────────────────────────────────────────────────────────────
 
+    def _on_tab_changed(self, event=None):
+        """상임위 탭이 처음 선택될 때 자동으로 목록을 불러옵니다."""
+        selected = self.notebook.select()
+        if selected == str(self.committee_tab) and not self._committee_loaded:
+            self._committee_loaded = True
+            self._start_w3_committee_fetch()
+
     def _start_w3_committee_fetch(self):
         if self.w3_fetch_thread and self.w3_fetch_thread.is_alive():
             return
@@ -1120,40 +1131,25 @@ class SeminarGUI:
 
         vv = int(time.time())
 
-        # 1) searchList (날짜 필터 지원)
-        try:
-            url = (f"{W3_BASE}/main/service/list.do?cmd=searchList"
-                   f"&mc_param={mc}&mc_param2={mc}"
-                   f"&searchUpdateDate={start_dt}&searchUpdateDate2={end_dt}"
-                   f"&searchType_id=&searchSelect=&searchString=&vv={vv}")
-            r = requests.get(url, headers=W3_HEADERS, timeout=15)
-            if r.status_code == 200:
-                confs = [c for c in r.json().get('confList', [])
-                         if not c.get('mc') or c.get('mc') == mc]
-                add_confs(confs)
-        except Exception as e:
-            logging.debug(f"W3 searchList error: {e}")
-
-        # 2) mainList fallback (페이지네이션)
-        if not all_confs:
-            for page in range(1, 51):
-                try:
-                    url = (f"{W3_BASE}/main/service/list.do"
-                           f"?cmd=mainList&menu={mc}&mc={mc}"
-                           f"&curPages={page}&vv={vv}")
-                    r = requests.get(url, headers=W3_HEADERS, timeout=15)
-                    if r.status_code != 200:
-                        break
-                    confs = r.json().get('confList', [])
-                    if not confs:
-                        break
-                    before = len(all_confs)
-                    add_confs(confs)
-                    if len(all_confs) == before:
-                        break  # 중복만 있으면 종료
-                    time.sleep(0.05)
-                except Exception:
+        # mainList (페이지네이션) - searchList는 항상 0건 반환하므로 사용하지 않음
+        for page in range(1, 51):
+            try:
+                url = (f"{W3_BASE}/main/service/list.do"
+                       f"?cmd=mainList&menu={mc}&mc={mc}"
+                       f"&curPages={page}&vv={vv}")
+                r = requests.get(url, headers=W3_HEADERS, timeout=15)
+                if r.status_code != 200:
                     break
+                confs = r.json().get('confList', [])
+                if not confs:
+                    break
+                before = len(all_confs)
+                add_confs(confs)
+                if len(all_confs) == before:
+                    break  # 중복만 있으면 종료
+                time.sleep(0.05)
+            except Exception:
+                break
 
         # 날짜 필터 (client-side)
         if start_dt or end_dt:
