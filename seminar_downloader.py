@@ -337,10 +337,10 @@ class SeminarGUI:
                                          state=tk.DISABLED)
         self.w3_dl_txt_btn.pack(fill=tk.X, pady=(0, 4))
 
-        self.w3_dl_srt_btn = ttk.Button(dl_frame, text="자막 다운로드 (SRT)",
-                                         command=lambda: self._start_w3_subtitle_download('srt'),
+        self.w3_dl_all_btn = ttk.Button(dl_frame, text="전체 자막 다운로드",
+                                         command=self._start_w3_full_subtitle_download,
                                          state=tk.DISABLED)
-        self.w3_dl_srt_btn.pack(fill=tk.X)
+        self.w3_dl_all_btn.pack(fill=tk.X)
 
     def create_treeview(self, parent):
         """Treeview 위젯 생성 및 설정"""
@@ -1438,7 +1438,7 @@ class SeminarGUI:
         has_stt = bool(self.stt_password.get())
         sub_state = tk.NORMAL if (state == tk.NORMAL and has_stt) else tk.DISABLED
         self.w3_dl_txt_btn.config(state=sub_state)
-        self.w3_dl_srt_btn.config(state=sub_state)
+        self.w3_dl_all_btn.config(state=sub_state)
 
     # ── 영상 다운로드 ──
 
@@ -1545,6 +1545,121 @@ class SeminarGUI:
             target=self._w3_download_subtitles,
             args=(self.w3_current_conf, clips, fmt), daemon=True)
         self.w3_download_thread.start()
+
+    def _start_w3_full_subtitle_download(self):
+        if self.w3_download_thread and self.w3_download_thread.is_alive():
+            messagebox.showwarning("진행 중", "이미 다운로드 중입니다.")
+            return
+        if not self.w3_current_conf:
+            messagebox.showwarning("선택 없음", "회의를 선택해주세요.")
+            return
+        self.w3_download_thread = threading.Thread(
+            target=self._w3_download_full_subtitles,
+            args=(self.w3_current_conf,), daemon=True)
+        self.w3_download_thread.start()
+
+    def _w3_download_full_subtitles(self, conf):
+        conf_title = self._sanitize_filename(conf.get('confTitle', 'unknown'))
+        conf_date  = conf.get('confDate', '')
+        date_str   = conf_date.replace('-', '')
+
+        self.master.after(0, self.w3_progress_bar.config, {'mode': 'indeterminate'})
+        self.master.after(0, self.w3_progress_bar.start)
+
+        try:
+            import paramiko
+        except ImportError:
+            self.update_status("오류: paramiko 미설치")
+            self.master.after(0, self.w3_progress_bar.stop)
+            return
+
+        self.update_status(f"STT 서버 전체 자막 수집 중: {conf_title}...")
+
+        try:
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            ssh.connect(self.stt_host.get(), port=22,
+                        username=self.stt_user.get(),
+                        password=self.stt_password.get(), timeout=15)
+            sftp = ssh.open_sftp()
+        except Exception as e:
+            self.update_status(f"SFTP 연결 실패: {e}")
+            self.master.after(0, self.w3_progress_bar.stop)
+            return
+
+        try:
+            # 날짜 디렉토리 탐색 (YYYYMMDD 또는 YYYY-MM-DD)
+            d_dash = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
+            base_path = None
+            for candidate in [date_str, d_dash]:
+                try:
+                    p = f"{self.stt_base_path.get()}/{candidate}"
+                    sftp.listdir(p)
+                    base_path = p
+                    break
+                except FileNotFoundError:
+                    continue
+
+            if base_path is None:
+                self.update_status(f"서버 경로 없음: {date_str}")
+                return
+
+            # 모든 서브디렉토리의 .txt.done 파일에서 transcript 수집
+            all_segments = []
+            for subdir in sftp.listdir(base_path):
+                dir_path = f"{base_path}/{subdir}"
+                try:
+                    files = [f for f in sftp.listdir(dir_path) if f.endswith('.txt.done')]
+                except Exception:
+                    continue
+                for fname in files:
+                    fpath = f"{dir_path}/{fname}"
+                    try:
+                        with sftp.open(fpath, 'rb') as fh:
+                            raw = fh.read()
+                        for line in raw.decode('utf-8', errors='ignore').split('\n'):
+                            line = line.strip()
+                            if not line or line == 'HW':
+                                continue
+                            try:
+                                item = json.loads(line)
+                            except json.JSONDecodeError:
+                                continue
+                            if item.get('transcript', '').strip():
+                                all_segments.append(item)
+                    except Exception as e:
+                        logging.debug(f"STT file read error {fpath}: {e}")
+
+            if not all_segments:
+                self.update_status(f"자막 없음: {conf_title}")
+                return
+
+            # recv-timestamp 순으로 정렬
+            all_segments.sort(key=lambda x: self._parse_recv_ts(x.get('recv-timestamp', '')))
+
+            content = self._stt_segments_to_txt(all_segments)
+            outfile = os.path.join(DOWNLOAD_DIR,
+                                   f"{date_str}_{conf_title}_전체.txt")
+            with open(outfile, 'w', encoding='utf-8') as f:
+                f.write(content)
+            self.update_status(
+                f"전체 자막 저장: {os.path.basename(outfile)} ({len(all_segments)}줄)")
+
+        except Exception as e:
+            logging.error(f"Full STT subtitle error: {e}", exc_info=True)
+            self.update_status(f"오류: {e}")
+        finally:
+            try:
+                sftp.close()
+            except Exception:
+                pass
+            try:
+                ssh.close()
+            except Exception:
+                pass
+            self.master.after(0, self.w3_progress_bar.stop)
+            self.master.after(0, self.w3_progress_bar.config,
+                              {'mode': 'determinate', 'value': 0})
 
     def _w3_download_subtitles(self, conf, clips, fmt):
         mc  = conf.get('mc', '')
