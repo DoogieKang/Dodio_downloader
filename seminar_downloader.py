@@ -1737,6 +1737,7 @@ class SeminarGUI:
             if has_stt:
                 real_time = clip.get('realTime', conf.get('confOpenTime', '00:00'))
                 play_time = clip.get('playTime', '')
+                logging.debug(f"[STT] clip={clip_title} realTime={real_time!r} playTime={play_time!r} keys={list(clip.keys())}")
 
                 if play_time:
                     self.update_status(f"STT 서버 자막 수집 중: {clip_title}...")
