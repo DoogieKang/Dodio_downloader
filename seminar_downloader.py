@@ -1635,7 +1635,12 @@ class SeminarGUI:
             resp.raise_for_status()
             data = resp.json()
             latest = data.get("tag_name", "").lstrip("v")
-            if not latest or latest <= APP_VERSION:
+            def _ver(v):
+                try:
+                    return tuple(int(x) for x in v.split('.'))
+                except ValueError:
+                    return (0,)
+            if not latest or _ver(latest) <= _ver(APP_VERSION):
                 return
 
             # 플랫폼별 첨부 파일 탐색
