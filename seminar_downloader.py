@@ -295,15 +295,13 @@ class SeminarGUI:
         conf_outer = ttk.Frame(parent, padding=(0, 6, 0, 0))
         conf_outer.pack(fill=tk.BOTH, expand=True)
 
-        cols = ("date", "title", "sami")
+        cols = ("date", "title")
         self.w3_conf_tree = ttk.Treeview(conf_outer, columns=cols,
                                           show="headings", height=12)
         self.w3_conf_tree.heading("date",  text="날짜",     anchor=tk.W)
         self.w3_conf_tree.heading("title", text="회의 제목", anchor=tk.W)
-        self.w3_conf_tree.heading("sami",  text="자막",     anchor=tk.CENTER)
         self.w3_conf_tree.column("date",  width=150, stretch=False)
-        self.w3_conf_tree.column("title", width=780)
-        self.w3_conf_tree.column("sami",  width=50,  stretch=False, anchor=tk.CENTER)
+        self.w3_conf_tree.column("title", width=830)
 
         vsb = ttk.Scrollbar(conf_outer, orient="vertical",
                              command=self.w3_conf_tree.yview)
@@ -1265,8 +1263,7 @@ class SeminarGUI:
         for conf in confs:
             date  = conf.get('confDate', '')
             title = conf.get('confTitle', '')
-            sami  = '●' if conf.get('sami', '0') == '1' else ''
-            iid = self.w3_conf_tree.insert('', 'end', values=(date, title, sami))
+            iid = self.w3_conf_tree.insert('', 'end', values=(date, title))
             self.w3_conf_data[iid] = conf
         self.w3_search_btn.config(state=tk.NORMAL)
 
@@ -1385,9 +1382,8 @@ class SeminarGUI:
             open_time = c.get('confOpenTime', '')
             display_date = f"{date_str} {open_time}".strip()
             title = c.get('confTitle', 'N/A')
-            sami  = "✓" if c.get('sami') == '1' else ''
             iid = self.w3_conf_tree.insert("", "end",
-                                            values=(display_date, title, sami))
+                                            values=(display_date, title))
             self.w3_conf_data[iid] = c
 
     def _on_w3_conf_selected(self, event=None):
@@ -1434,16 +1430,15 @@ class SeminarGUI:
             play  = m.get('playTime', '')
             title = m.get('movieTitle', '')
             self.w3_clip_listbox.insert(tk.END, f"[{play}]  {title}")
-        self._set_w3_dl_state(tk.NORMAL, has_sami=(sami_is == '1'))
+        self._set_w3_dl_state(tk.NORMAL)
         self.update_status(f"클립 {len(movie_list)}개 로드 완료.")
 
-    def _set_w3_dl_state(self, state, has_sami=False):
+    def _set_w3_dl_state(self, state):
         self.w3_dl_video_btn.config(state=state)
-        # STT 서버가 설정된 경우 sami 없어도 자막 버튼 활성화
         has_stt = bool(self.stt_password.get())
-        sami_state = tk.NORMAL if (state == tk.NORMAL and (has_sami or has_stt)) else tk.DISABLED
-        self.w3_dl_txt_btn.config(state=sami_state)
-        self.w3_dl_srt_btn.config(state=sami_state)
+        sub_state = tk.NORMAL if (state == tk.NORMAL and has_stt) else tk.DISABLED
+        self.w3_dl_txt_btn.config(state=sub_state)
+        self.w3_dl_srt_btn.config(state=sub_state)
 
     # ── 영상 다운로드 ──
 
@@ -1978,7 +1973,7 @@ class SeminarGUI:
         def on_close():
             self._save_config()
             if self.w3_movie_data:
-                self._set_w3_dl_state(tk.NORMAL, has_sami=(self.w3_sami_is == '1'))
+                self._set_w3_dl_state(tk.NORMAL)
             dialog.destroy()
 
         ttk.Button(frame, text="확인", command=on_close).pack(anchor=tk.E, pady=(8, 0))
