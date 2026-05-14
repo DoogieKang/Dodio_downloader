@@ -1582,15 +1582,19 @@ class SeminarGUI:
         self.w3_download_thread.start()
 
     @staticmethod
-    def _match_committee_dir(comm_name, available_dirs):
-        """위원회명 키워드로 서버 디렉토리를 찾습니다. stem(숫자 제거) 기준 매칭."""
-        stem_map = {re.sub(r'\d+$', '', d): d for d in available_dirs}
+    def _match_committee_dirs(comm_name, available_dirs):
+        """위원회명 키워드로 서버 디렉토리 목록을 찾습니다. 숫자 suffix 무시."""
+        stem_to_dirs = {}
+        for d in available_dirs:
+            stem = re.sub(r'\d+$', '', d)
+            stem_to_dirs.setdefault(stem, []).append(d)
+
         for dir_stem, keywords in _COMM_DIR_KEYWORDS:
             for kw in keywords:
                 if kw and kw in comm_name:
-                    if dir_stem in stem_map:
-                        return stem_map[dir_stem]
-        return None
+                    if dir_stem in stem_to_dirs:
+                        return stem_to_dirs[dir_stem]
+        return []
 
     def _w3_download_full_subtitles(self, conf):
         conf_title = self._sanitize_filename(conf.get('confTitle', 'unknown'))
@@ -1642,9 +1646,9 @@ class SeminarGUI:
             mc        = conf.get('mc', '')
             comm_name = self.w3_committee_map.get(mc, '') or conf.get('confTitle', '')
             available_dirs = sftp.listdir(base_path)
-            matched   = self._match_committee_dir(comm_name, available_dirs)
+            matched = self._match_committee_dirs(comm_name, available_dirs)
             if matched:
-                subdirs = [matched]
+                subdirs = matched
                 self.update_status(f"위원회 디렉토리: {matched} → 자막 수집 중...")
             else:
                 subdirs = available_dirs
