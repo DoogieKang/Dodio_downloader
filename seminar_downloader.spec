@@ -1,11 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
+from PyInstaller.utils.hooks import collect_all
+ttkbs_datas, ttkbs_binaries, ttkbs_hiddenimports = collect_all('ttkbootstrap')
 
 a = Analysis(
     ['seminar_downloader.py'],
     pathex=[],
-    binaries=[],
-    datas=[('default_config.json', '.')],
-    hiddenimports=[
+    binaries=ttkbs_binaries,
+    datas=[('default_config.json', '.')] + ttkbs_datas,
+    hiddenimports=ttkbs_hiddenimports + [
         'selenium',
         'selenium.webdriver',
         'selenium.webdriver.chrome',

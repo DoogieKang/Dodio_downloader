@@ -208,91 +208,27 @@ class SeminarGUI:
         logging.debug("SeminarGUI __init__ finished.")
 
     def _setup_styles(self):
+        # ttkbootstrap이 테마를 이미 적용했으므로 폰트/크기만 덮어씀
         style = ttk.Style()
-        try:
-            style.theme_use('clam')
-        except tk.TclError:
-            pass
-
-        BG     = '#F4F5F7'
-        PANEL  = '#FFFFFF'
-        ACCENT = '#3B7DD8'
-        TEXT   = '#1C1C2E'
-        MUTED  = '#6B7280'
-        BORDER = '#D1D5DB'
-        HEAD   = '#EAECF0'
-        SEL    = '#DBE9FF'
-        BTN_H  = '#E5EDFF'
 
         FONT       = ('Helvetica', 12)
         FONT_BOLD  = ('Helvetica', 12, 'bold')
         FONT_SMALL = ('Helvetica', 11)
 
-        self.master.configure(background=BG)
-
-        style.configure('.',            background=BG,    foreground=TEXT, font=FONT)
-        style.configure('TFrame',       background=BG)
-        style.configure('Panel.TFrame', background=PANEL)
-        style.configure('TLabel',       background=BG,    foreground=TEXT, font=FONT)
-        style.configure('Muted.TLabel', background=BG,    foreground=MUTED, font=FONT_SMALL)
-
-        style.configure('TButton', font=FONT, padding=(10, 5), relief='flat')
-        style.map('TButton',
-                  background=[('active', BTN_H), ('!active', HEAD)],
-                  relief=[('active', 'flat')])
-
-        style.configure('TEntry',    font=FONT, fieldbackground=PANEL,
-                        bordercolor=BORDER, insertcolor=TEXT)
-        style.configure('TCombobox', font=FONT, fieldbackground=PANEL,
-                        bordercolor=BORDER)
-        style.map('TCombobox', fieldbackground=[('readonly', PANEL)])
-
-        style.configure('TNotebook', background=BG, tabmargins=[2, 5, 2, 0])
-        style.configure('TNotebook.Tab', font=FONT_BOLD, padding=[16, 7],
-                        background=HEAD, foreground=MUTED)
-        style.map('TNotebook.Tab',
-                  background=[('selected', PANEL), ('active', BTN_H)],
-                  foreground=[('selected', ACCENT), ('active', TEXT)],
-                  expand=[('selected', [1, 1, 1, 0])])
-
-        style.configure('Treeview',
-                        background=PANEL, foreground=TEXT,
-                        fieldbackground=PANEL, font=FONT, rowheight=30)
-        style.configure('Treeview.Heading',
-                        background=HEAD, foreground=TEXT,
-                        font=FONT_BOLD, relief='flat', padding=(6, 6))
-        style.map('Treeview',
-                  background=[('selected', SEL)],
-                  foreground=[('selected', TEXT)])
-        style.map('Treeview.Heading',
-                  background=[('active', BORDER)])
-
-        style.configure('TLabelframe',       background=BG, bordercolor=BORDER)
-        style.configure('TLabelframe.Label', font=FONT_BOLD, foreground=TEXT, background=BG)
-
-        style.configure('TProgressbar',
-                        troughcolor=HEAD, background=ACCENT,
-                        thickness=5, borderwidth=0)
-
-        style.configure('Vertical.TScrollbar',
-                        troughcolor=BG, background=HEAD, arrowcolor=MUTED)
-        style.configure('Horizontal.TScrollbar',
-                        troughcolor=BG, background=HEAD, arrowcolor=MUTED)
-
-        style.configure('TSeparator', background=BORDER)
-        style.configure('Status.TLabel',
-                        background=HEAD, foreground=MUTED,
-                        font=FONT_SMALL, padding=(10, 4))
+        style.configure('.',                 font=FONT)
+        style.configure('TLabel',            font=FONT)
+        style.configure('TButton',           font=FONT, padding=(10, 5))
+        style.configure('TEntry',            font=FONT)
+        style.configure('TCombobox',         font=FONT)
+        style.configure('TNotebook.Tab',     font=FONT_BOLD, padding=[16, 7])
+        style.configure('Treeview',          font=FONT, rowheight=30)
+        style.configure('Treeview.Heading',  font=FONT_BOLD)
+        style.configure('TLabelframe.Label', font=FONT_BOLD)
+        style.configure('Muted.TLabel',      font=FONT_SMALL, foreground='gray')
+        style.configure('Status.TLabel',     font=FONT_SMALL, padding=(10, 4))
 
         self._ui_font      = FONT
         self._ui_font_bold = FONT_BOLD
-        self._ui_bg        = BG
-        self._ui_panel     = PANEL
-        self._ui_accent    = ACCENT
-        self._ui_text      = TEXT
-        self._ui_muted     = MUTED
-        self._ui_sel       = SEL
-        self._ui_head      = HEAD
 
     def _create_content_list_tab(self, parent_frame, content_type_filter):
         """세미나/기자회견 목록 탭의 UI를 생성합니다."""
@@ -443,13 +379,17 @@ class SeminarGUI:
         clip_lf.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
 
         clip_vsb = ttk.Scrollbar(clip_lf, orient=tk.VERTICAL)
+        _s = ttk.Style()
+        _lb_bg  = _s.lookup('TEntry', 'fieldbackground') or 'white'
+        _lb_fg  = _s.lookup('TLabel', 'foreground')      or 'black'
+        _lb_sel = _s.lookup('Treeview', 'background', ['selected']) or '#0078d4'
         self.w3_clip_listbox = tk.Listbox(clip_lf, selectmode=tk.EXTENDED,
                                            yscrollcommand=clip_vsb.set,
                                            font=('Helvetica', 12),
-                                           background='#FFFFFF',
-                                           foreground='#1C1C2E',
-                                           selectbackground='#DBE9FF',
-                                           selectforeground='#1C1C2E',
+                                           background=_lb_bg,
+                                           foreground=_lb_fg,
+                                           selectbackground=_lb_sel,
+                                           selectforeground=_lb_fg,
                                            relief='flat', borderwidth=0,
                                            height=5)
         clip_vsb.config(command=self.w3_clip_listbox.yview)
@@ -2514,12 +2454,20 @@ class SeminarGUI:
 if __name__ == "__main__":
     try:
         logging.debug("Script execution started.")
-        
-        root = tk.Tk()
-        logging.debug("Tkinter root created.")
+
+        try:
+            import ttkbootstrap as ttkbs
+            root = ttkbs.Window(themename="cosmo")
+            root.title("두디오 다운로더")
+            root.geometry("1280x860")
+            logging.debug("ttkbootstrap Window created (cosmo theme).")
+        except ImportError:
+            root = tk.Tk()
+            root.title("두디오 다운로더")
+            root.geometry("1280x860")
+            logging.debug("ttkbootstrap not found, fallback to tk.Tk.")
 
         app = SeminarGUI(root)
-
         logging.debug("SeminarGUI app instance created.")
         root.mainloop()
         logging.debug("Tkinter mainloop exited.")

@@ -1,12 +1,14 @@
 # -*- mode: python ; coding: utf-8 -*-
 # macOS 전용 PyInstaller 스펙 파일
+from PyInstaller.utils.hooks import collect_all
+ttkbs_datas, ttkbs_binaries, ttkbs_hiddenimports = collect_all('ttkbootstrap')
 
 a = Analysis(
     ['seminar_downloader.py'],
     pathex=[],
-    binaries=[('build_temp/ffmpeg', '.')],  # ffmpeg을 .app 내부에 번들
-    datas=[('default_config.json', '.')],
-    hiddenimports=[
+    binaries=[('build_temp/ffmpeg', '.')] + ttkbs_binaries,
+    datas=[('default_config.json', '.')] + ttkbs_datas,
+    hiddenimports=ttkbs_hiddenimports + [
         'selenium',
         'selenium.webdriver',
         'selenium.webdriver.chrome',
