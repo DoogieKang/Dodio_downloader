@@ -1606,49 +1606,11 @@ class SeminarGUI:
                         except Exception as e:
                             logging.error(f"STT subtitle save error: {e}", exc_info=True)
                     else:
-                        self.update_status(f"STT 자막 없음 ({err}) → smiList fallback 시도...")
-                        msg = (
-                            f"STT 매칭 실패\n\n"
-                            f"오류: {err}\n\n"
-                            f"사용된 값:\n"
-                            f"  confDate   = {conf_date}\n"
-                            f"  realTime   = {real_time}\n"
-                            f"  playTime   = {play_time}\n\n"
-                            f"clip 필드 목록:\n  {list(clip.keys())}\n\n"
-                            f"conf 필드 목록:\n  {list(conf.keys())}"
-                        )
-                        logging.warning(msg)
-                        self.master.after(0, lambda m=msg: messagebox.showinfo("STT 디버그", m))
+                        self.update_status(f"STT 자막 없음: {clip_title} ({err})")
+                        logging.warning(f"STT subtitle not found: {err}, clip={clip_title}")
 
-            # ── 2단계: smiList API fallback ──
             if not written:
-                try:
-                    vv  = int(time.time())
-                    url = (f"{W3_BASE}/main/service/smi.do?cmd=smiList"
-                           f"&no={no}&mc={mc}&ct1={ct1}&ct2={ct2}&ct3={ct3}"
-                           f"&v=20220203&vv={vv}")
-                    r        = requests.get(url, headers=W3_HEADERS, timeout=15)
-                    smi_list = r.json().get('smiList', [])
-
-                    if not smi_list:
-                        self.update_status(f"자막 없음: {clip_title}")
-                        continue
-
-                    if fmt == 'srt':
-                        content = self._smilist_to_srt(smi_list)
-                        outfile = base + '.srt'
-                    else:
-                        content = self._smilist_to_txt(smi_list)
-                        outfile = base + '.txt'
-
-                    with open(outfile, 'w', encoding='utf-8') as f:
-                        f.write(content)
-                    self.update_status(
-                        f"자막 저장 (smiList): {os.path.basename(outfile)} ({len(smi_list)}줄)")
-
-                except Exception as e:
-                    logging.error(f"W3 subtitle download error: {e}", exc_info=True)
-                    self.update_status(f"자막 오류: {e}")
+                self.update_status(f"자막 없음: {clip_title}")
 
         self.master.after(0, self.w3_progress_bar.stop)
         self.master.after(0, self.w3_progress_bar.config,
@@ -1967,13 +1929,14 @@ class SeminarGUI:
                                 fp = f"{dp}/{fname}"
                                 fstat = sftp.stat(fp)
                                 with sftp.open(fp, 'rb') as fh:
-                                    head = fh.read(256).decode('utf-8', errors='ignore')
-                                first = head.split('\n')[0]
+                                    head = fh.read(512).decode('utf-8', errors='ignore')
+                                json_lines = [l.strip() for l in head.split('\n')
+                                              if l.strip() and l.strip() != 'HW']
                                 try:
-                                    ts = json.loads(first).get('recv-timestamp', '?')
+                                    ts = json.loads(json_lines[0]).get('recv-timestamp', '?') if json_lines else '?'
                                     lines.append(f"  첫 recv-timestamp: {ts}")
                                 except Exception:
-                                    lines.append(f"  첫 줄 파싱 실패: {first[:80]}")
+                                    lines.append(f"  첫 줄 파싱 실패")
                         except Exception as e:
                             lines.append(f"\n[{d}] 접근 오류: {e}")
 
@@ -2117,26 +2080,36 @@ class SeminarGUI:
                         fstat = sftp.stat(fpath)
                         fsize = fstat.st_size
 
-                        # 첫 줄 → 시작 recv-timestamp 확인
+                        # 첫 줄 → 시작 recv-timestamp 확인 (HW 헤더 건너뜀)
                         with sftp.open(fpath, 'rb') as fh:
                             head = fh.read(512).decode('utf-8', errors='ignore')
-                        first_line = head.split('\n')[0].strip()
-                        if not first_line:
+                        json_lines = [l.strip() for l in head.split('\n')
+                                      if l.strip() and l.strip() != 'HW']
+                        if not json_lines:
                             continue
-                        first_data = json.loads(first_line)
-                        first_ts = first_data.get('recv-timestamp', 0)
+                        try:
+                            first_data = json.loads(json_lines[0])
+                        except json.JSONDecodeError:
+                            continue
+                        first_ts = self._parse_recv_ts(first_data.get('recv-timestamp', ''))
 
                         # 마지막 줄 → 종료 recv-timestamp 확인
                         with sftp.open(fpath, 'rb') as fh:
                             fh.seek(max(0, fsize - 4096))
                             tail = fh.read().decode('utf-8', errors='ignore')
-                        last_lines = [l for l in tail.split('\n') if l.strip()]
+                        last_lines = [l for l in tail.split('\n')
+                                      if l.strip() and l.strip() != 'HW']
                         if not last_lines:
                             continue
-                        last_data = json.loads(last_lines[-1])
-                        last_ts = last_data.get('recv-timestamp', 0)
+                        try:
+                            last_data = json.loads(last_lines[-1])
+                        except json.JSONDecodeError:
+                            continue
+                        last_ts = self._parse_recv_ts(last_data.get('recv-timestamp', ''))
 
                         # 겹치지 않으면 건너뜀
+                        if first_ts == 0 or last_ts == 0:
+                            continue
                         if first_ts > clip_end_ms or last_ts < clip_start_ms:
                             continue
 
@@ -2148,14 +2121,14 @@ class SeminarGUI:
                         segments = []
                         for line in content.split('\n'):
                             line = line.strip()
-                            if not line:
+                            if not line or line == 'HW':
                                 continue
                             try:
                                 item = json.loads(line)
                             except json.JSONDecodeError:
                                 continue
-                            recv_ts = item.get('recv-timestamp', 0)
-                            if clip_start_ms <= recv_ts < clip_end_ms:
+                            recv_ts = self._parse_recv_ts(item.get('recv-timestamp', ''))
+                            if recv_ts and clip_start_ms <= recv_ts < clip_end_ms:
                                 segments.append(item)
 
                         if segments and (best_segments is None or
@@ -2181,7 +2154,18 @@ class SeminarGUI:
                 pass
 
     @staticmethod
-    def _stt_segments_to_srt(segments, clip_start_ms):
+    def _parse_recv_ts(ts_str):
+        """ISO 8601 recv-timestamp 문자열을 UTC ms로 변환합니다."""
+        if not ts_str:
+            return 0
+        try:
+            from datetime import timezone as _tz
+            dt = datetime.fromisoformat(ts_str)
+            return int(dt.timestamp() * 1000)
+        except (ValueError, AttributeError):
+            return 0
+
+    def _stt_segments_to_srt(self, segments, clip_start_ms):
         """STT 세그먼트 목록을 SRT 문자열로 변환합니다."""
         def to_ts(ms):
             ms = max(0, int(ms))
@@ -2196,8 +2180,8 @@ class SeminarGUI:
             text = item.get('transcript', '').strip()
             if not text:
                 continue
-            recv_ts  = item.get('recv-timestamp', 0)
-            seg_dur  = item.get('segment-duration', 3000)  # ms 단위 가정
+            recv_ts  = self._parse_recv_ts(item.get('recv-timestamp', ''))
+            seg_dur  = item.get('segment-duration', 3000)
             start_ms = recv_ts - clip_start_ms
             end_ms   = start_ms + seg_dur
             lines.append(f"{idx}\n{to_ts(start_ms)} --> {to_ts(end_ms)}\n{text}\n")
