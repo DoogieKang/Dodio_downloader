@@ -1,0 +1,144 @@
+name: Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '배포할 버전 (예: 1.1)'
+        required: true
+        default: '1.0'
+
+jobs:
+  build-windows:
+    name: Windows 빌드 (.exe)
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Python 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 패키지 설치
+        run: pip install -r requirements.txt pyinstaller
+
+      - name: 버전 업데이트
+        shell: pwsh
+        run: |
+          $v = "${{ github.event.inputs.version }}"
+          (Get-Content installer.iss) -replace '#define AppVersion ".*"', "#define AppVersion `"$v`"" | Set-Content installer.iss
+          (Get-Content seminar_downloader.py) -replace 'APP_VERSION = ".*"', "APP_VERSION = `"$v`"" | Set-Content seminar_downloader.py
+
+      - name: 기본 설정 파일 생성
+        env:
+          STT_HOST: ${{ secrets.STT_HOST }}
+          STT_USER: ${{ secrets.STT_USER }}
+          STT_BASE_PATH: ${{ secrets.STT_BASE_PATH }}
+        run: |
+          python -c "
+          import json, os
+          cfg = {
+              'stt_host': os.environ['STT_HOST'],
+              'stt_user': os.environ['STT_USER'],
+              'stt_password': '',
+              'stt_base_path': os.environ['STT_BASE_PATH']
+          }
+          with open('default_config.json', 'w', encoding='utf-8') as f:
+              json.dump(cfg, f, ensure_ascii=False, indent=2)
+          "
+
+      - name: ffmpeg 다운로드 (Windows)
+        run: |
+          mkdir build_temp
+          curl -L "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -o ffmpeg.zip
+          7z e ffmpeg.zip "*/bin/ffmpeg.exe" -obuild_temp -r
+
+      - name: PyInstaller 빌드
+        run: pyinstaller seminar_downloader.spec --noconfirm
+
+      - name: Inno Setup 설치
+        run: choco install innosetup --yes
+
+      - name: 인스톨러 빌드
+        run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss'
+
+      - name: GitHub Releases에 업로드
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.event.inputs.version }}
+          name: v${{ github.event.inputs.version }}
+          files: installer_output/DodioDownloader_Setup.exe
+
+  build-mac:
+    name: macOS 빌드 (.dmg)
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Python 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 패키지 설치
+        run: pip install -r requirements.txt pyinstaller
+
+      - name: 버전 업데이트
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          sed -i '' "s/APP_VERSION = \".*\"/APP_VERSION = \"$VERSION\"/" seminar_downloader.py
+          sed -i '' "s/'CFBundleShortVersionString': '.*'/'CFBundleShortVersionString': '$VERSION'/" seminar_downloader_mac.spec
+
+      - name: 기본 설정 파일 생성
+        env:
+          STT_HOST: ${{ secrets.STT_HOST }}
+          STT_USER: ${{ secrets.STT_USER }}
+          STT_BASE_PATH: ${{ secrets.STT_BASE_PATH }}
+        run: |
+          python3 -c "
+          import json, os
+          cfg = {
+              'stt_host': os.environ['STT_HOST'],
+              'stt_user': os.environ['STT_USER'],
+              'stt_password': '',
+              'stt_base_path': os.environ['STT_BASE_PATH']
+          }
+          with open('default_config.json', 'w', encoding='utf-8') as f:
+              json.dump(cfg, f, ensure_ascii=False, indent=2)
+          "
+
+      - name: ffmpeg 다운로드 (macOS)
+        run: |
+          mkdir -p build_temp
+          brew install ffmpeg
+          cp "$(which ffmpeg)" build_temp/ffmpeg
+          chmod +x build_temp/ffmpeg
+
+      - name: PyInstaller 빌드 (macOS)
+        run: pyinstaller seminar_downloader_mac.spec --noconfirm
+
+      - name: DMG 생성
+        run: |
+          mkdir -p dist/dmg
+          cp -r "dist/DodioDownloader.app" dist/dmg/
+          hdiutil create \
+            -volname "DodioDownloader" \
+            -srcfolder dist/dmg \
+            -ov -format UDZO \
+            "dist/DodioDownloader.dmg"
+
+      - name: GitHub Releases에 업로드
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.event.inputs.version }}
+          name: v${{ github.event.inputs.version }}
+          files: dist/DodioDownloader.dmg

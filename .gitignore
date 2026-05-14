@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.DS_Store
+.venv_build/
+dist/
+build/
+build_temp/
+installer_output/
+seminars_download/
+.claude/
+*.bak
+backup_seminar_downloader/
+ffmpeg.zip
+default_config.json
