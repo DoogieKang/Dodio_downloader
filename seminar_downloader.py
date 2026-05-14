@@ -2251,53 +2251,28 @@ class SeminarGUI:
                 for fname in files:
                     fpath = f"{dir_path}/{fname}"
                     try:
-                        # 파일 크기 조회
-                        fstat = sftp.stat(fpath)
-                        fsize = fstat.st_size
-
-                        # 첫 줄 → 시작 recv-timestamp 확인 (HW 헤더 건너뜀)
-                        with sftp.open(fpath, 'rb') as fh:
-                            head = fh.read(512).decode('utf-8', errors='ignore')
-                        json_lines = [l.strip() for l in head.split('\n')
-                                      if l.strip() and l.strip() != 'HW']
-                        if not json_lines:
-                            continue
-                        try:
-                            first_data = json.loads(json_lines[0])
-                        except json.JSONDecodeError:
-                            continue
-                        first_ts = self._parse_recv_ts(first_data.get('recv-timestamp', ''))
-
-                        # 마지막 줄 → 종료 recv-timestamp 확인
-                        with sftp.open(fpath, 'rb') as fh:
-                            fh.seek(max(0, fsize - 4096))
-                            tail = fh.read().decode('utf-8', errors='ignore')
-                        last_lines = [l for l in tail.split('\n')
-                                      if l.strip() and l.strip() != 'HW']
-                        if not last_lines:
-                            continue
-                        try:
-                            last_data = json.loads(last_lines[-1])
-                        except json.JSONDecodeError:
-                            continue
-                        last_ts = self._parse_recv_ts(last_data.get('recv-timestamp', ''))
-
-                        # 겹치지 않으면 건너뜀
-                        if first_ts == 0 or last_ts == 0:
-                            continue
-                        if first_ts > clip_end_ms or last_ts < clip_start_ms:
-                            continue
-
-                        # 전체 파일 읽기 후 필터링
+                        # 파일 전체 읽기 (head/tail 분할 방식은 JSON 줄이 잘릴 수 있음)
                         with sftp.open(fpath, 'rb') as fh:
                             raw = fh.read()
-                        content = raw.decode('utf-8', errors='ignore')
+                        all_lines = [l.strip() for l in raw.decode('utf-8', errors='ignore').split('\n')
+                                     if l.strip() and l.strip() != 'HW']
+                        if not all_lines:
+                            continue
+
+                        # 첫/마지막 타임스탬프로 pre-filter (파싱 실패 시 필터 건너뜀)
+                        try:
+                            first_ts = self._parse_recv_ts(json.loads(all_lines[0]).get('recv-timestamp', ''))
+                        except Exception:
+                            first_ts = 0
+                        try:
+                            last_ts = self._parse_recv_ts(json.loads(all_lines[-1]).get('recv-timestamp', ''))
+                        except Exception:
+                            last_ts = 0
+                        if first_ts and last_ts and (first_ts > clip_end_ms or last_ts < clip_start_ms):
+                            continue
 
                         segments = []
-                        for line in content.split('\n'):
-                            line = line.strip()
-                            if not line or line == 'HW':
-                                continue
+                        for line in all_lines:
                             try:
                                 item = json.loads(line)
                             except json.JSONDecodeError:
