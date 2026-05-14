@@ -81,6 +81,7 @@ _COMM_DIR_KEYWORDS = [
     ('yegyeol',  ['예산결산', '예결']),
     ('woman',    ['여성가족', '여가', '성평등']),
     ('special',  ['특별위']),
+    ('bon',      ['본회의']),
 ]
 
 # --- Setup Logging ---
