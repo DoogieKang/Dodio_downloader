@@ -61,6 +61,29 @@ W3_HEADERS = {
     'Referer': 'https://w3.assembly.go.kr/main/index.do',
 }
 
+# 위원회명 키워드 → STT 서버 디렉토리명 매핑 (숫자 suffix 제외한 stem 기준)
+_COMM_DIR_KEYWORDS = [
+    ('gyoyuk',   ['교육']),
+    ('gwabang',  ['과학기술정보방송통신', '과방', '과학기술', '방송통신']),
+    ('beopsa',   ['법제사법', '법사']),
+    ('gukto',    ['국토교통', '국토']),
+    ('hwanno',   ['환경노동', '환노']),
+    ('jeongmu',  ['정무']),
+    ('munche',   ['문화체육관광', '문체']),
+    ('bokji',    ['보건복지', '복지']),
+    ('jaejeong', ['기획재정', '재정']),
+    ('sangi',    ['산업통상', '중소벤처', '산자']),
+    ('gukbang',  ['국방']),
+    ('oegyo',    ['외교통일', '외통']),
+    ('haean',    ['행정안전', '행안']),
+    ('nonglim',  ['농림축산식품해양수산', '농해수', '농림']),
+    ('jeongbo',  ['정보위']),
+    ('unyeong',  ['국회운영', '운영위']),
+    ('yessan',   ['예산결산', '예결']),
+    ('natv',     []),   # 국회TV - 매칭 제외
+    ('press',    []),   # 기자회견 - 매칭 제외
+]
+
 # --- Setup Logging ---
 LOG_FILE = os.path.join(DOWNLOAD_DIR, "seminar_downloader.log")
 logging.basicConfig(filename=LOG_FILE, level=logging.DEBUG, 
@@ -1558,6 +1581,17 @@ class SeminarGUI:
             args=(self.w3_current_conf,), daemon=True)
         self.w3_download_thread.start()
 
+    @staticmethod
+    def _match_committee_dir(comm_name, available_dirs):
+        """위원회명 키워드로 서버 디렉토리를 찾습니다. stem(숫자 제거) 기준 매칭."""
+        stem_map = {re.sub(r'\d+$', '', d): d for d in available_dirs}
+        for dir_stem, keywords in _COMM_DIR_KEYWORDS:
+            for kw in keywords:
+                if kw and kw in comm_name:
+                    if dir_stem in stem_map:
+                        return stem_map[dir_stem]
+        return None
+
     def _w3_download_full_subtitles(self, conf):
         conf_title = self._sanitize_filename(conf.get('confTitle', 'unknown'))
         conf_date  = conf.get('confDate', '')
@@ -1604,9 +1638,21 @@ class SeminarGUI:
                 self.update_status(f"서버 경로 없음: {date_str}")
                 return
 
-            # 모든 서브디렉토리의 .txt.done 파일에서 transcript 수집
+            # 위원회명으로 서버 디렉토리 매칭
+            mc        = conf.get('mc', '')
+            comm_name = self.w3_committee_map.get(mc, '') or conf.get('confTitle', '')
+            available_dirs = sftp.listdir(base_path)
+            matched   = self._match_committee_dir(comm_name, available_dirs)
+            if matched:
+                subdirs = [matched]
+                self.update_status(f"위원회 디렉토리: {matched} → 자막 수집 중...")
+            else:
+                subdirs = available_dirs
+                logging.warning(f"위원회 디렉토리 매칭 실패({comm_name}), 전체 스캔")
+
+            # 해당 서브디렉토리의 .txt.done 파일에서 transcript 수집
             all_segments = []
-            for subdir in sftp.listdir(base_path):
+            for subdir in subdirs:
                 dir_path = f"{base_path}/{subdir}"
                 try:
                     files = [f for f in sftp.listdir(dir_path) if f.endswith('.txt.done')]
