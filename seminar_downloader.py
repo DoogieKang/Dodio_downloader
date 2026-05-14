@@ -2315,7 +2315,39 @@ class SeminarGUI:
                         logging.debug(f"STT file read error {fpath}: {e}")
                         continue
 
-            return (best_segments, None) if best_segments else (None, "해당 클립에 매칭되는 자막 없음")
+            if best_segments:
+                return best_segments, None
+
+            # 시간 매칭 실패 시 해당 디렉토리 전체 반환 (국정감사 등 타임스탬프 불일치 대응)
+            logging.warning("STT 시간 매칭 실패, 디렉토리 전체 반환 fallback")
+            all_segments = []
+            for d in dirs:
+                dir_path = f"{base_path}/{d}"
+                try:
+                    files = [f for f in sftp.listdir(dir_path) if f.endswith('.txt.done')]
+                except Exception:
+                    continue
+                for fname in files:
+                    fpath = f"{dir_path}/{fname}"
+                    try:
+                        with sftp.open(fpath, 'rb') as fh:
+                            raw = fh.read()
+                        for line in raw.decode('utf-8', errors='ignore').split('\n'):
+                            line = line.strip()
+                            if not line or line == 'HW':
+                                continue
+                            try:
+                                item = json.loads(line)
+                            except json.JSONDecodeError:
+                                continue
+                            if item.get('transcript', '').strip():
+                                all_segments.append(item)
+                    except Exception:
+                        continue
+            if all_segments:
+                all_segments.sort(key=lambda x: self._parse_recv_ts(x.get('recv-timestamp', '')))
+                return all_segments, None
+            return None, "해당 클립에 매칭되는 자막 없음"
 
         finally:
             try:
