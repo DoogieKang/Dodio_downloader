@@ -95,7 +95,8 @@ class SeminarGUI:
         logging.debug("SeminarGUI __init__ started.")
         self.master = master
         master.title("두디오 다운로더")
-        master.geometry("1200x800")
+        master.geometry("1280x860")
+        self._setup_styles()
 
         # --- 메뉴바 ---
         menubar = tk.Menu(master)
@@ -159,12 +160,12 @@ class SeminarGUI:
         
         # --- Main UI: Tabs ---
         self.notebook = ttk.Notebook(master)
-        self.notebook.pack(pady=10, padx=10, fill="both", expand=True)
+        self.notebook.pack(pady=(8, 0), padx=10, fill="both", expand=True)
 
-        self.downloader_tab = ttk.Frame(self.notebook, padding="10")
-        self.press_conference_tab = ttk.Frame(self.notebook, padding="10")
+        self.downloader_tab = ttk.Frame(self.notebook, padding="12")
+        self.press_conference_tab = ttk.Frame(self.notebook, padding="12")
 
-        self.committee_tab = ttk.Frame(self.notebook, padding="10")
+        self.committee_tab = ttk.Frame(self.notebook, padding="12")
 
         self.notebook.add(self.downloader_tab, text='세미나')
         self.notebook.add(self.press_conference_tab, text='기자회견')
@@ -187,7 +188,9 @@ class SeminarGUI:
         self._w3_conf_json_cache = {}
 
         # --- Status Bar ---
-        self.status_bar = ttk.Label(master, text="준비. 로컬 목록을 불러옵니다.", relief=tk.SUNKEN, anchor=tk.W)
+        ttk.Separator(master, orient='horizontal').pack(side=tk.BOTTOM, fill=tk.X)
+        self.status_bar = ttk.Label(master, text="준비. 로컬 목록을 불러옵니다.",
+                                    style='Status.TLabel', anchor=tk.W)
         self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
         
         self.load_local_seminars()
@@ -204,51 +207,145 @@ class SeminarGUI:
 
         logging.debug("SeminarGUI __init__ finished.")
 
+    def _setup_styles(self):
+        style = ttk.Style()
+        try:
+            style.theme_use('clam')
+        except tk.TclError:
+            pass
+
+        BG     = '#F4F5F7'
+        PANEL  = '#FFFFFF'
+        ACCENT = '#3B7DD8'
+        TEXT   = '#1C1C2E'
+        MUTED  = '#6B7280'
+        BORDER = '#D1D5DB'
+        HEAD   = '#EAECF0'
+        SEL    = '#DBE9FF'
+        BTN_H  = '#E5EDFF'
+
+        FONT       = ('Helvetica', 12)
+        FONT_BOLD  = ('Helvetica', 12, 'bold')
+        FONT_SMALL = ('Helvetica', 11)
+
+        self.master.configure(background=BG)
+
+        style.configure('.',            background=BG,    foreground=TEXT, font=FONT)
+        style.configure('TFrame',       background=BG)
+        style.configure('Panel.TFrame', background=PANEL)
+        style.configure('TLabel',       background=BG,    foreground=TEXT, font=FONT)
+        style.configure('Muted.TLabel', background=BG,    foreground=MUTED, font=FONT_SMALL)
+
+        style.configure('TButton', font=FONT, padding=(10, 5), relief='flat')
+        style.map('TButton',
+                  background=[('active', BTN_H), ('!active', HEAD)],
+                  relief=[('active', 'flat')])
+
+        style.configure('TEntry',    font=FONT, fieldbackground=PANEL,
+                        bordercolor=BORDER, insertcolor=TEXT)
+        style.configure('TCombobox', font=FONT, fieldbackground=PANEL,
+                        bordercolor=BORDER)
+        style.map('TCombobox', fieldbackground=[('readonly', PANEL)])
+
+        style.configure('TNotebook', background=BG, tabmargins=[2, 5, 2, 0])
+        style.configure('TNotebook.Tab', font=FONT_BOLD, padding=[16, 7],
+                        background=HEAD, foreground=MUTED)
+        style.map('TNotebook.Tab',
+                  background=[('selected', PANEL), ('active', BTN_H)],
+                  foreground=[('selected', ACCENT), ('active', TEXT)],
+                  expand=[('selected', [1, 1, 1, 0])])
+
+        style.configure('Treeview',
+                        background=PANEL, foreground=TEXT,
+                        fieldbackground=PANEL, font=FONT, rowheight=30)
+        style.configure('Treeview.Heading',
+                        background=HEAD, foreground=TEXT,
+                        font=FONT_BOLD, relief='flat', padding=(6, 6))
+        style.map('Treeview',
+                  background=[('selected', SEL)],
+                  foreground=[('selected', TEXT)])
+        style.map('Treeview.Heading',
+                  background=[('active', BORDER)])
+
+        style.configure('TLabelframe',       background=BG, bordercolor=BORDER)
+        style.configure('TLabelframe.Label', font=FONT_BOLD, foreground=TEXT, background=BG)
+
+        style.configure('TProgressbar',
+                        troughcolor=HEAD, background=ACCENT,
+                        thickness=5, borderwidth=0)
+
+        style.configure('Vertical.TScrollbar',
+                        troughcolor=BG, background=HEAD, arrowcolor=MUTED)
+        style.configure('Horizontal.TScrollbar',
+                        troughcolor=BG, background=HEAD, arrowcolor=MUTED)
+
+        style.configure('TSeparator', background=BORDER)
+        style.configure('Status.TLabel',
+                        background=HEAD, foreground=MUTED,
+                        font=FONT_SMALL, padding=(10, 4))
+
+        self._ui_font      = FONT
+        self._ui_font_bold = FONT_BOLD
+        self._ui_bg        = BG
+        self._ui_panel     = PANEL
+        self._ui_accent    = ACCENT
+        self._ui_text      = TEXT
+        self._ui_muted     = MUTED
+        self._ui_sel       = SEL
+        self._ui_head      = HEAD
+
     def _create_content_list_tab(self, parent_frame, content_type_filter):
         """세미나/기자회견 목록 탭의 UI를 생성합니다."""
-        main_frame = ttk.Frame(parent_frame)
-        main_frame.pack(fill=tk.BOTH, expand=True)
+        # ── Toolbar ──
+        toolbar = ttk.Frame(parent_frame)
+        toolbar.pack(fill=tk.X, pady=(0, 6))
 
-        control_frame = ttk.Frame(main_frame)
-        control_frame.pack(fill=tk.X)
+        refresh_button = ttk.Button(toolbar, text="목록 새로고침",
+                                    command=self.start_fetch_thread)
+        refresh_button.pack(side=tk.LEFT, padx=(0, 6))
 
-        refresh_button = ttk.Button(control_frame, text="목록 새로고침", command=self.start_fetch_thread)
-        refresh_button.pack(side=tk.LEFT, padx=(0, 10))
-        
-        open_folder_button = ttk.Button(control_frame, text="다운로드 폴더 열기", command=self.open_download_folder)
-        open_folder_button.pack(side=tk.LEFT, padx=(0, 10))
+        open_folder_button = ttk.Button(toolbar, text="폴더 열기",
+                                        command=self.open_download_folder)
+        open_folder_button.pack(side=tk.LEFT, padx=(0, 6))
 
-        progress_label = ttk.Label(control_frame, text="")
-        progress_label.pack(side=tk.LEFT, padx=(0, 10))
-        
-        progress_bar = ttk.Progressbar(control_frame, orient="horizontal", length=200, mode="determinate")
-        progress_bar.pack(side=tk.LEFT, pady=5)
+        progress_label = ttk.Label(toolbar, text="", style='Muted.TLabel')
+        progress_label.pack(side=tk.LEFT, padx=(0, 6))
 
-        # 검색 바
-        search_frame = ttk.Frame(main_frame)
-        search_frame.pack(fill=tk.X, pady=(6, 0))
-        ttk.Label(search_frame, text="검색:").pack(side=tk.LEFT, padx=(0, 5))
+        progress_bar = ttk.Progressbar(toolbar, orient="horizontal",
+                                       length=180, mode="determinate")
+        progress_bar.pack(side=tk.LEFT)
+
+        ttk.Separator(parent_frame, orient='horizontal').pack(fill=tk.X, pady=(0, 8))
+
+        # ── Search bar ──
+        search_frame = ttk.Frame(parent_frame)
+        search_frame.pack(fill=tk.X, pady=(0, 8))
+
+        ttk.Label(search_frame, text="검색").pack(side=tk.LEFT, padx=(0, 6))
         search_var = tk.StringVar()
-        search_entry = ttk.Entry(search_frame, textvariable=search_var, width=40)
-        search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        search_entry = ttk.Entry(search_frame, textvariable=search_var)
+        search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
         ttk.Button(search_frame, text="지우기",
-                   command=lambda: search_var.set("")).pack(side=tk.LEFT, padx=(5, 0))
+                   command=lambda: search_var.set("")).pack(side=tk.LEFT)
 
-        list_frame = ttk.Frame(main_frame, padding=(0, 6, 0, 0))
-        list_frame.pack(fill=tk.BOTH, expand=True)
+        # ── Content list ──
+        list_frame = ttk.Frame(parent_frame)
+        list_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
 
         tree = self.create_treeview(list_frame)
-        
-        download_frame = ttk.LabelFrame(main_frame, text="다운로드", padding="10")
-        download_frame.pack(fill=tk.X, pady=10)
-        
-        selected_title_label = ttk.Label(download_frame, text="선택된 항목: 없음", wraplength=1000, anchor=tk.W)
-        selected_title_label.pack(fill=tk.X, pady=(0, 5))
 
-        download_button_frame = ttk.Frame(download_frame)
+        # ── Download panel ──
+        dl_panel = ttk.LabelFrame(parent_frame, text="다운로드", padding=(10, 6))
+        dl_panel.pack(fill=tk.X)
+
+        selected_title_label = ttk.Label(dl_panel, text="선택된 항목: 없음",
+                                         wraplength=1100, anchor=tk.W,
+                                         style='Muted.TLabel')
+        selected_title_label.pack(fill=tk.X, pady=(0, 6))
+
+        download_button_frame = ttk.Frame(dl_panel)
         download_button_frame.pack(fill=tk.X)
-        
-        # Store treeview reference and other widgets based on content_type_filter
+
         if content_type_filter == "FULL":
             self.downloader_tree = tree
             self.downloader_progress_label = progress_label
@@ -277,92 +374,104 @@ class SeminarGUI:
 
     def _create_committee_tab(self, parent):
         """상임위 탭 UI를 생성합니다 (w3.assembly.go.kr)."""
-        # ── 컨트롤 바 ──
-        ctrl = ttk.Frame(parent)
-        ctrl.pack(fill=tk.X)
+        # ── Toolbar ──
+        toolbar = ttk.Frame(parent)
+        toolbar.pack(fill=tk.X, pady=(0, 6))
 
-        self.w3_refresh_btn = ttk.Button(ctrl, text="상임위 목록 새로고침",
+        self.w3_refresh_btn = ttk.Button(toolbar, text="상임위 목록 새로고침",
                                          command=self._start_w3_committee_fetch)
-        self.w3_refresh_btn.pack(side=tk.LEFT, padx=(0, 8))
+        self.w3_refresh_btn.pack(side=tk.LEFT, padx=(0, 6))
 
-        ttk.Button(ctrl, text="다운로드 폴더 열기",
-                   command=self.open_download_folder).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(toolbar, text="폴더 열기",
+                   command=self.open_download_folder).pack(side=tk.LEFT, padx=(0, 6))
 
-        self.w3_progress_bar = ttk.Progressbar(ctrl, orient="horizontal",
-                                               length=200, mode="determinate")
-        self.w3_progress_bar.pack(side=tk.LEFT, pady=5)
+        self.w3_progress_bar = ttk.Progressbar(toolbar, orient="horizontal",
+                                               length=180, mode="determinate")
+        self.w3_progress_bar.pack(side=tk.LEFT)
 
-        # ── 상임위 선택 + 날짜 검색 ──
-        sel = ttk.Frame(parent)
-        sel.pack(fill=tk.X, pady=(8, 0))
+        ttk.Separator(parent, orient='horizontal').pack(fill=tk.X, pady=(0, 8))
 
-        ttk.Label(sel, text="상임위:").pack(side=tk.LEFT)
+        # ── Filter row ──
+        filt = ttk.Frame(parent)
+        filt.pack(fill=tk.X, pady=(0, 8))
+
+        ttk.Label(filt, text="상임위").pack(side=tk.LEFT, padx=(0, 4))
         self.w3_comm_var = tk.StringVar()
-        self.w3_comm_combo = ttk.Combobox(sel, textvariable=self.w3_comm_var,
-                                           state='readonly', width=28)
-        self.w3_comm_combo.pack(side=tk.LEFT, padx=(4, 16))
+        self.w3_comm_combo = ttk.Combobox(filt, textvariable=self.w3_comm_var,
+                                           state='readonly', width=26)
+        self.w3_comm_combo.pack(side=tk.LEFT, padx=(0, 16))
         self.w3_comm_combo.bind('<<ComboboxSelected>>', self._on_w3_committee_selected)
 
-        ttk.Label(sel, text="기간:").pack(side=tk.LEFT)
+        ttk.Label(filt, text="기간").pack(side=tk.LEFT, padx=(0, 4))
         self.w3_start_var = tk.StringVar(value="2024-01-01")
-        ttk.Entry(sel, textvariable=self.w3_start_var, width=12).pack(side=tk.LEFT, padx=(4, 2))
-        ttk.Label(sel, text="~").pack(side=tk.LEFT, padx=2)
+        ttk.Entry(filt, textvariable=self.w3_start_var, width=12).pack(side=tk.LEFT, padx=(0, 2))
+        ttk.Label(filt, text="~").pack(side=tk.LEFT, padx=4)
         self.w3_end_var = tk.StringVar(value=datetime.today().strftime('%Y-%m-%d'))
-        ttk.Entry(sel, textvariable=self.w3_end_var, width=12).pack(side=tk.LEFT, padx=(2, 8))
+        ttk.Entry(filt, textvariable=self.w3_end_var, width=12).pack(side=tk.LEFT, padx=(0, 10))
 
-        self.w3_search_btn = ttk.Button(sel, text="검색",
+        self.w3_search_btn = ttk.Button(filt, text="검색",
                                         command=self._on_w3_search_clicked)
         self.w3_search_btn.pack(side=tk.LEFT)
 
-        # ── 회의 목록 Treeview ──
-        conf_outer = ttk.Frame(parent, padding=(0, 6, 0, 0))
-        conf_outer.pack(fill=tk.BOTH, expand=True)
+        # ── Vertical split ──
+        paned = ttk.PanedWindow(parent, orient=tk.VERTICAL)
+        paned.pack(fill=tk.BOTH, expand=True)
+
+        # Upper pane: conference list
+        upper = ttk.Frame(paned)
+        paned.add(upper, weight=3)
 
         cols = ("date", "title")
-        self.w3_conf_tree = ttk.Treeview(conf_outer, columns=cols,
-                                          show="headings", height=12)
+        self.w3_conf_tree = ttk.Treeview(upper, columns=cols, show="headings")
         self.w3_conf_tree.heading("date",  text="날짜",     anchor=tk.W)
         self.w3_conf_tree.heading("title", text="회의 제목", anchor=tk.W)
-        self.w3_conf_tree.column("date",  width=150, stretch=False)
-        self.w3_conf_tree.column("title", width=830)
+        self.w3_conf_tree.column("date",  width=160, stretch=False)
+        self.w3_conf_tree.column("title", width=800)
 
-        vsb = ttk.Scrollbar(conf_outer, orient="vertical",
+        vsb = ttk.Scrollbar(upper, orient="vertical",
                              command=self.w3_conf_tree.yview)
         self.w3_conf_tree.configure(yscrollcommand=vsb.set)
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
         self.w3_conf_tree.pack(fill=tk.BOTH, expand=True)
         self.w3_conf_tree.bind('<<TreeviewSelect>>', self._on_w3_conf_selected)
 
-        # ── 클립 목록 + 다운로드 버튼 ──
-        bot = ttk.Frame(parent)
-        bot.pack(fill=tk.X, pady=(8, 0))
+        # Lower pane: clip list + download buttons
+        lower = ttk.Frame(paned)
+        paned.add(lower, weight=1)
 
-        clip_lf = ttk.LabelFrame(bot, text="클립 선택  (Ctrl+클릭으로 복수 선택)", padding=6)
-        clip_lf.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        clip_lf = ttk.LabelFrame(lower, text="클립 선택  (Ctrl+클릭으로 복수 선택)", padding=6)
+        clip_lf.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
 
         clip_vsb = ttk.Scrollbar(clip_lf, orient=tk.VERTICAL)
         self.w3_clip_listbox = tk.Listbox(clip_lf, selectmode=tk.EXTENDED,
-                                           yscrollcommand=clip_vsb.set, height=6)
+                                           yscrollcommand=clip_vsb.set,
+                                           font=('Helvetica', 12),
+                                           background='#FFFFFF',
+                                           foreground='#1C1C2E',
+                                           selectbackground='#DBE9FF',
+                                           selectforeground='#1C1C2E',
+                                           relief='flat', borderwidth=0,
+                                           height=5)
         clip_vsb.config(command=self.w3_clip_listbox.yview)
         clip_vsb.pack(side=tk.RIGHT, fill=tk.Y)
         self.w3_clip_listbox.pack(fill=tk.BOTH, expand=True)
 
-        dl_frame = ttk.Frame(bot)
-        dl_frame.pack(side=tk.LEFT, padx=(12, 0), anchor=tk.N)
+        dl_frame = ttk.Frame(lower)
+        dl_frame.pack(side=tk.LEFT, anchor=tk.N)
 
         self.w3_dl_video_btn = ttk.Button(dl_frame, text="영상 다운로드",
                                            command=self._start_w3_video_download,
-                                           state=tk.DISABLED)
+                                           state=tk.DISABLED, width=16)
         self.w3_dl_video_btn.pack(fill=tk.X, pady=(0, 4))
 
         self.w3_dl_txt_btn = ttk.Button(dl_frame, text="자막 다운로드 (TXT)",
                                          command=lambda: self._start_w3_subtitle_download('txt'),
-                                         state=tk.DISABLED)
+                                         state=tk.DISABLED, width=16)
         self.w3_dl_txt_btn.pack(fill=tk.X, pady=(0, 4))
 
         self.w3_dl_all_btn = ttk.Button(dl_frame, text="전체 자막 다운로드",
                                          command=self._start_w3_full_subtitle_download,
-                                         state=tk.DISABLED)
+                                         state=tk.DISABLED, width=16)
         self.w3_dl_all_btn.pack(fill=tk.X)
 
     def create_treeview(self, parent):
