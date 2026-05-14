@@ -208,24 +208,55 @@ class SeminarGUI:
         logging.debug("SeminarGUI __init__ finished.")
 
     def _setup_styles(self):
-        # ttkbootstrap이 테마를 이미 적용했으므로 폰트/크기만 덮어씀
+        import tkinter.font as tkfont
+
+        # 플랫폼별 폰트
+        if sys.platform == 'win32':
+            FAMILY = 'Segoe UI'
+        elif sys.platform == 'darwin':
+            FAMILY = 'Helvetica Neue'
+        else:
+            FAMILY = 'DejaVu Sans'
+
+        FONT       = (FAMILY, 13)
+        FONT_BOLD  = (FAMILY, 13, 'bold')
+        FONT_SMALL = (FAMILY, 11)
+
+        # tkinter 기본 named font 전체 교체 (ttkbootstrap 내부 참조 포함)
+        for fname in ('TkDefaultFont', 'TkTextFont', 'TkFixedFont',
+                      'TkMenuFont', 'TkHeadingFont', 'TkCaptionFont',
+                      'TkSmallCaptionFont', 'TkIconFont', 'TkTooltipFont'):
+            try:
+                f = tkfont.nametofont(fname)
+                f.configure(family=FAMILY, size=13)
+            except Exception:
+                pass
+
         style = ttk.Style()
 
-        FONT       = ('Helvetica', 12)
-        FONT_BOLD  = ('Helvetica', 12, 'bold')
-        FONT_SMALL = ('Helvetica', 11)
+        # 버튼: 점선 포커스 테두리 제거 (Windows), 여백 확대
+        style.configure('TButton',
+                        font=FONT_BOLD, padding=(14, 7),
+                        focusthickness=0, focuscolor='')
+        style.map('TButton', focuscolor=[('focus', ''), ('!focus', '')])
 
-        style.configure('.',                 font=FONT)
-        style.configure('TLabel',            font=FONT)
-        style.configure('TButton',           font=FONT, padding=(10, 5))
-        style.configure('TEntry',            font=FONT)
-        style.configure('TCombobox',         font=FONT)
-        style.configure('TNotebook.Tab',     font=FONT_BOLD, padding=[16, 7])
-        style.configure('Treeview',          font=FONT, rowheight=30)
-        style.configure('Treeview.Heading',  font=FONT_BOLD)
+        # 탭: 굵은 폰트, 여유있는 패딩
+        style.configure('TNotebook.Tab', font=FONT_BOLD, padding=[18, 8])
+
+        # Treeview: 줄 간격 넉넉하게
+        style.configure('Treeview',         font=FONT, rowheight=36)
+        style.configure('Treeview.Heading', font=FONT_BOLD, padding=(8, 8))
+
+        # LabelFrame 제목
         style.configure('TLabelframe.Label', font=FONT_BOLD)
-        style.configure('Muted.TLabel',      font=FONT_SMALL, foreground='gray')
-        style.configure('Status.TLabel',     font=FONT_SMALL, padding=(10, 4))
+
+        # Entry / Combobox
+        style.configure('TEntry',    font=FONT)
+        style.configure('TCombobox', font=FONT)
+
+        # 커스텀 라벨 스타일
+        style.configure('Muted.TLabel',  font=FONT_SMALL)
+        style.configure('Status.TLabel', font=FONT_SMALL, padding=(12, 5))
 
         self._ui_font      = FONT
         self._ui_font_bold = FONT_BOLD
@@ -379,17 +410,14 @@ class SeminarGUI:
         clip_lf.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
 
         clip_vsb = ttk.Scrollbar(clip_lf, orient=tk.VERTICAL)
-        _s = ttk.Style()
-        _lb_bg  = _s.lookup('TEntry', 'fieldbackground') or 'white'
-        _lb_fg  = _s.lookup('TLabel', 'foreground')      or 'black'
-        _lb_sel = _s.lookup('Treeview', 'background', ['selected']) or '#0078d4'
         self.w3_clip_listbox = tk.Listbox(clip_lf, selectmode=tk.EXTENDED,
                                            yscrollcommand=clip_vsb.set,
-                                           font=('Helvetica', 12),
-                                           background=_lb_bg,
-                                           foreground=_lb_fg,
-                                           selectbackground=_lb_sel,
-                                           selectforeground=_lb_fg,
+                                           font=(self._ui_font[0], 13),
+                                           background='#ffffff',
+                                           foreground='#2c3e50',
+                                           selectbackground='#18bc9c',
+                                           selectforeground='#ffffff',
+                                           activestyle='none',
                                            relief='flat', borderwidth=0,
                                            height=5)
         clip_vsb.config(command=self.w3_clip_listbox.yview)
@@ -2457,10 +2485,10 @@ if __name__ == "__main__":
 
         try:
             import ttkbootstrap as ttkbs
-            root = ttkbs.Window(themename="cosmo")
+            root = ttkbs.Window(themename="flatly")
             root.title("두디오 다운로더")
             root.geometry("1280x860")
-            logging.debug("ttkbootstrap Window created (cosmo theme).")
+            logging.debug("ttkbootstrap Window created (flatly theme).")
         except ImportError:
             root = tk.Tk()
             root.title("두디오 다운로더")
