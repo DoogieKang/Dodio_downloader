@@ -5,7 +5,7 @@ a = Analysis(
     ['seminar_downloader.py'],
     pathex=[],
     binaries=[('build_temp/ffmpeg', '.')],  # ffmpeg을 .app 내부에 번들
-    datas=[],
+    datas=[('default_config.json', '.')],
     hiddenimports=[
         'selenium',
         'selenium.webdriver',
@@ -23,6 +23,12 @@ a = Analysis(
         'urllib3',
         'charset_normalizer',
         'idna',
+        'paramiko',
+        'paramiko.transport',
+        'paramiko.sftp_client',
+        'cryptography',
+        'bcrypt',
+        'pynacl',
     ],
     hookspath=[],
     hooksconfig={},

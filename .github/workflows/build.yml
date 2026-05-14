@@ -34,6 +34,24 @@ jobs:
           (Get-Content installer.iss) -replace '#define AppVersion ".*"', "#define AppVersion `"$v`"" | Set-Content installer.iss
           (Get-Content seminar_downloader.py) -replace 'APP_VERSION = ".*"', "APP_VERSION = `"$v`"" | Set-Content seminar_downloader.py
 
+      - name: 기본 설정 파일 생성
+        env:
+          STT_HOST: ${{ secrets.STT_HOST }}
+          STT_USER: ${{ secrets.STT_USER }}
+          STT_BASE_PATH: ${{ secrets.STT_BASE_PATH }}
+        run: |
+          python -c "
+          import json, os
+          cfg = {
+              'stt_host': os.environ['STT_HOST'],
+              'stt_user': os.environ['STT_USER'],
+              'stt_password': '',
+              'stt_base_path': os.environ['STT_BASE_PATH']
+          }
+          with open('default_config.json', 'w', encoding='utf-8') as f:
+              json.dump(cfg, f, ensure_ascii=False, indent=2)
+          "
+
       - name: ffmpeg 다운로드 (Windows)
         run: |
           mkdir build_temp
@@ -79,6 +97,24 @@ jobs:
           VERSION="${{ github.event.inputs.version }}"
           sed -i '' "s/APP_VERSION = \".*\"/APP_VERSION = \"$VERSION\"/" seminar_downloader.py
           sed -i '' "s/'CFBundleShortVersionString': '.*'/'CFBundleShortVersionString': '$VERSION'/" seminar_downloader_mac.spec
+
+      - name: 기본 설정 파일 생성
+        env:
+          STT_HOST: ${{ secrets.STT_HOST }}
+          STT_USER: ${{ secrets.STT_USER }}
+          STT_BASE_PATH: ${{ secrets.STT_BASE_PATH }}
+        run: |
+          python3 -c "
+          import json, os
+          cfg = {
+              'stt_host': os.environ['STT_HOST'],
+              'stt_user': os.environ['STT_USER'],
+              'stt_password': '',
+              'stt_base_path': os.environ['STT_BASE_PATH']
+          }
+          with open('default_config.json', 'w', encoding='utf-8') as f:
+              json.dump(cfg, f, ensure_ascii=False, indent=2)
+          "
 
       - name: ffmpeg 다운로드 (macOS)
         run: |

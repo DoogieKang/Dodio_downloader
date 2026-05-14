@@ -46,7 +46,10 @@ UPDATE_CHECK_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 UPDATE_INSTALLER_URL = ""  # 최신 릴리즈에서 자동으로 가져옴
 
 DOWNLOAD_DIR = os.path.join(os.path.expanduser("~"), "seminars_download")
-JSON_FILE = os.path.join(DOWNLOAD_DIR, "all_seminars.json")
+JSON_FILE     = os.path.join(DOWNLOAD_DIR, "all_seminars.json")
+W3_COMM_JSON  = os.path.join(DOWNLOAD_DIR, "w3_committees.json")
+W3_CONF_JSON  = os.path.join(DOWNLOAD_DIR, "w3_conferences.json")
+CONFIG_FILE   = os.path.join(DOWNLOAD_DIR, "config.json")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 # --- W3 영상회의록시스템 (상임위) ---
@@ -75,6 +78,7 @@ class SeminarGUI:
         menubar = tk.Menu(master)
         settings_menu = tk.Menu(menubar, tearoff=0)
         settings_menu.add_command(label="Selenium 설정...", command=self._open_settings_dialog)
+        settings_menu.add_command(label="STT 서버 설정...", command=self._open_stt_settings_dialog)
         menubar.add_cascade(label="설정", menu=settings_menu)
         master.config(menu=menubar)
 
@@ -92,6 +96,13 @@ class SeminarGUI:
         self.selenium_headless_mode = tk.BooleanVar(value=True) # Headless by default
         self.selenium_user_agent = tk.StringVar(value="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36")
         self.selenium_extractor = None # Will be initialized when needed
+
+        # --- STT 서버 설정 ---
+        self.stt_host     = tk.StringVar(value="")
+        self.stt_user     = tk.StringVar(value="")
+        self.stt_password = tk.StringVar(value="")
+        self.stt_base_path = tk.StringVar(value="")
+        self._load_config()
 
         # --- W3 상임위 탭 상태 ---
         self.w3_committee_map = {}   # mc -> name
@@ -145,9 +156,12 @@ class SeminarGUI:
         # --- Build Committee Tab ---
         self._create_committee_tab(self.committee_tab)
 
-        # --- Auto-load committee list on first tab switch ---
+        # --- 상임위 탭: 캐시 파일에서 로드 (탭 전환 시) ---
         self._committee_loaded = False
         self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+
+        # 상임위 회의 목록 캐시 {mc: [conf_list]}
+        self._w3_conf_json_cache = {}
 
         # --- Status Bar ---
         self.status_bar = ttk.Label(master, text="준비. 로컬 목록을 불러옵니다.", relief=tk.SUNKEN, anchor=tk.W)
@@ -274,7 +288,7 @@ class SeminarGUI:
         ttk.Entry(sel, textvariable=self.w3_end_var, width=12).pack(side=tk.LEFT, padx=(2, 8))
 
         self.w3_search_btn = ttk.Button(sel, text="검색",
-                                        command=self._on_w3_committee_selected)
+                                        command=self._on_w3_search_clicked)
         self.w3_search_btn.pack(side=tk.LEFT)
 
         # ── 회의 목록 Treeview ──
@@ -510,6 +524,46 @@ class SeminarGUI:
                 selenium_btn.config(state=tk.DISABLED)
             selenium_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=5)
         
+    def _get_default_config_path(self):
+        if getattr(sys, 'frozen', False):
+            base = sys._MEIPASS
+        else:
+            base = os.path.dirname(os.path.abspath(__file__))
+        return os.path.join(base, 'default_config.json')
+
+    def _load_config(self):
+        # 사용자 설정 우선, 없으면 번들된 기본값 사용
+        if os.path.exists(CONFIG_FILE):
+            cfg_path = CONFIG_FILE
+        else:
+            cfg_path = self._get_default_config_path()
+            if not os.path.exists(cfg_path):
+                return
+        try:
+            with open(cfg_path, 'r', encoding='utf-8') as f:
+                cfg = json.load(f)
+            self.stt_host.set(cfg.get('stt_host', ''))
+            self.stt_user.set(cfg.get('stt_user', ''))
+            self.stt_password.set(cfg.get('stt_password', ''))
+            self.stt_base_path.set(cfg.get('stt_base_path', ''))
+            logging.debug(f"Config loaded from: {cfg_path}")
+        except Exception as e:
+            logging.warning(f"Config load failed: {e}")
+
+    def _save_config(self):
+        try:
+            cfg = {
+                'stt_host':      self.stt_host.get(),
+                'stt_user':      self.stt_user.get(),
+                'stt_password':  self.stt_password.get(),
+                'stt_base_path': self.stt_base_path.get(),
+            }
+            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+                json.dump(cfg, f, ensure_ascii=False, indent=2)
+            logging.debug("Config saved to file.")
+        except Exception as e:
+            logging.warning(f"Config save failed: {e}")
+
     def load_local_seminars(self):
         logging.debug("load_local_seminars started.")
         if os.path.exists(JSON_FILE):
@@ -1040,13 +1094,52 @@ class SeminarGUI:
     # ──────────────────────────────────────────────────────────────
 
     def _on_tab_changed(self, event=None):
-        """상임위 탭이 처음 선택될 때 자동으로 목록을 불러옵니다."""
+        """상임위 탭이 처음 선택될 때 캐시 파일에서 목록을 로드합니다."""
         selected = self.notebook.select()
         if selected == str(self.committee_tab) and not self._committee_loaded:
             self._committee_loaded = True
-            self._start_w3_committee_fetch()
+            self._load_w3_committee_cache()
+
+    def _load_w3_committee_cache(self):
+        """저장된 상임위 목록 캐시를 읽어 드롭다운을 채웁니다."""
+        if os.path.exists(W3_COMM_JSON):
+            try:
+                with open(W3_COMM_JSON, 'r', encoding='utf-8') as f:
+                    saved = json.load(f)
+                self.w3_committee_map = saved
+                self._w3_name_to_mc   = {v: k for k, v in saved.items()}
+                self.master.after(0, lambda: self._update_w3_comm_dropdown(
+                    sorted(saved.values())))
+                self.update_status(f"상임위 {len(saved)}개 로드 완료 (캐시).")
+                return
+            except Exception as e:
+                logging.warning(f"상임위 캐시 로드 실패: {e}")
+
+        # 캐시 없으면 서버에서 새로 받기
+        self._start_w3_committee_fetch()
+
+    def _load_w3_conf_cache(self):
+        """저장된 회의 목록 캐시 파일을 메모리에 로드합니다."""
+        if os.path.exists(W3_CONF_JSON):
+            try:
+                with open(W3_CONF_JSON, 'r', encoding='utf-8') as f:
+                    self._w3_conf_json_cache = json.load(f)
+            except Exception as e:
+                logging.warning(f"회의 목록 캐시 로드 실패: {e}")
+                self._w3_conf_json_cache = {}
+        else:
+            self._w3_conf_json_cache = {}
+
+    def _save_w3_conf_cache(self):
+        """메모리의 회의 목록 캐시를 파일에 저장합니다."""
+        try:
+            with open(W3_CONF_JSON, 'w', encoding='utf-8') as f:
+                json.dump(self._w3_conf_json_cache, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logging.warning(f"회의 목록 캐시 저장 실패: {e}")
 
     def _start_w3_committee_fetch(self):
+        """상임위 목록을 서버에서 새로 받아옵니다 (새로고침)."""
         if self.w3_fetch_thread and self.w3_fetch_thread.is_alive():
             return
         self.w3_refresh_btn.config(state=tk.DISABLED)
@@ -1058,7 +1151,7 @@ class SeminarGUI:
         self.w3_fetch_thread.start()
 
     def _fetch_w3_committees(self):
-        """menu 코드 1-120을 병렬 스캔하여 상임위 목록을 수집합니다."""
+        """menu 코드 1-120을 병렬 스캔하여 상임위 목록을 수집하고 캐시에 저장합니다."""
         found = {}  # mc -> name
 
         def check(code):
@@ -1075,7 +1168,6 @@ class SeminarGUI:
                     nm = (c.get('commFullName') or c.get('commName', '')).strip()
                     if mc and nm:
                         found[mc] = nm
-                # commList 없을 때 상위 mc/thisName 활용
                 if not data.get('commList') and data.get('confList'):
                     mc = (data.get('mc') or str(code)).strip()
                     nm = (data.get('thisName') or data.get('menuName', '')).strip()
@@ -1088,7 +1180,15 @@ class SeminarGUI:
             list(ex.map(check, range(1, 121)))
 
         self.w3_committee_map = found
-        self._w3_name_to_mc = {v: k for k, v in found.items()}
+        self._w3_name_to_mc   = {v: k for k, v in found.items()}
+
+        # 캐시 파일 저장
+        try:
+            with open(W3_COMM_JSON, 'w', encoding='utf-8') as f:
+                json.dump(found, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logging.warning(f"상임위 캐시 저장 실패: {e}")
+
         sorted_names = sorted(found.values())
         self.master.after(0, lambda: self._update_w3_comm_dropdown(sorted_names))
         self.update_status(f"상임위 {len(found)}개 수집 완료.")
@@ -1098,24 +1198,77 @@ class SeminarGUI:
         self.w3_refresh_btn.config(state=tk.NORMAL)
 
     def _on_w3_committee_selected(self, event=None):
+        """드롭다운 선택 시 → 캐시에서 로드."""
         name = self.w3_comm_var.get()
         if not name:
             return
         mc = self._w3_name_to_mc.get(name, '')
         if not mc:
             return
-        self.w3_search_btn.config(state=tk.DISABLED)
+
         self.w3_conf_tree.delete(*self.w3_conf_tree.get_children())
         self.w3_clip_listbox.delete(0, tk.END)
         self.w3_movie_data = []
         self._set_w3_dl_state(tk.DISABLED)
-        self.update_status(f"회의 목록 수집 중: {name}...")
+
+        # 회의 목록 캐시가 있으면 즉시 표시
+        if not self._w3_conf_json_cache:
+            self._load_w3_conf_cache()
 
         start = self.w3_start_var.get().replace('-', '')
         end   = self.w3_end_var.get().replace('-', '')
+
+        if mc in self._w3_conf_json_cache:
+            self.w3_conf_cache = self._w3_conf_json_cache[mc]
+            self._apply_w3_date_filter(start, end)
+            self.update_status(f"{name} {len(self.w3_conf_cache)}건 (캐시). 새 회의가 있으면 '검색'을 누르세요.")
+        else:
+            # 캐시 없으면 서버에서 받기
+            self._start_w3_conf_fetch(mc, name, start, end)
+
+    def _on_w3_search_clicked(self):
+        """검색 버튼 → 항상 서버에서 새로 받음."""
+        name = self.w3_comm_var.get()
+        if not name:
+            return
+        mc = self._w3_name_to_mc.get(name, '')
+        if not mc:
+            return
+
+        self.w3_conf_tree.delete(*self.w3_conf_tree.get_children())
+        self.w3_clip_listbox.delete(0, tk.END)
+        self.w3_movie_data = []
+        self._set_w3_dl_state(tk.DISABLED)
+
+        start = self.w3_start_var.get().replace('-', '')
+        end   = self.w3_end_var.get().replace('-', '')
+        self._start_w3_conf_fetch(mc, name, start, end)
+
+    def _start_w3_conf_fetch(self, mc, name, start, end):
+        self.w3_search_btn.config(state=tk.DISABLED)
+        self.update_status(f"회의 목록 수집 중: {name}...")
         t = threading.Thread(target=self._fetch_w3_conferences,
                               args=(mc, name, start, end), daemon=True)
         t.start()
+
+    def _apply_w3_date_filter(self, start, end):
+        """self.w3_conf_cache를 날짜 필터 후 트리뷰에 표시합니다."""
+        confs = self.w3_conf_cache
+        if start or end:
+            def in_range(c):
+                d = c.get('confDate', '').replace('-', '')
+                return (not start or d >= start) and (not end or d <= end)
+            confs = [c for c in confs if in_range(c)]
+
+        self.w3_conf_tree.delete(*self.w3_conf_tree.get_children())
+        self.w3_conf_data = {}
+        for conf in confs:
+            date  = conf.get('confDate', '')
+            title = conf.get('confTitle', '')
+            sami  = '●' if conf.get('sami', '0') == '1' else ''
+            iid = self.w3_conf_tree.insert('', 'end', values=(date, title, sami))
+            self.w3_conf_data[iid] = conf
+        self.w3_search_btn.config(state=tk.NORMAL)
 
     def _fetch_w3_conferences(self, mc, comm_name, start_dt, end_dt):
         """회의 목록 수집.
@@ -1216,8 +1369,12 @@ class SeminarGUI:
                        reverse=True)
 
         self.w3_conf_cache = all_confs
-        self.master.after(0, self._populate_w3_conf_tree)
-        self.master.after(0, self.w3_search_btn.config, {'state': tk.NORMAL})
+
+        # 회의 목록 캐시 파일에 저장 (날짜 필터 전 전체 목록)
+        self._w3_conf_json_cache[mc] = all_confs
+        self._save_w3_conf_cache()
+
+        self.master.after(0, lambda: self._apply_w3_date_filter(start_dt, end_dt))
         self.update_status(f"{comm_name} 회의 {len(all_confs)}건 수집 완료.")
 
     def _populate_w3_conf_tree(self):
@@ -1282,7 +1439,9 @@ class SeminarGUI:
 
     def _set_w3_dl_state(self, state, has_sami=False):
         self.w3_dl_video_btn.config(state=state)
-        sami_state = tk.NORMAL if (state == tk.NORMAL and has_sami) else tk.DISABLED
+        # STT 서버가 설정된 경우 sami 없어도 자막 버튼 활성화
+        has_stt = bool(self.stt_password.get())
+        sami_state = tk.NORMAL if (state == tk.NORMAL and (has_sami or has_stt)) else tk.DISABLED
         self.w3_dl_txt_btn.config(state=sami_state)
         self.w3_dl_srt_btn.config(state=sami_state)
 
@@ -1398,43 +1557,98 @@ class SeminarGUI:
         ct2 = conf.get('ct2', '')
         ct3 = conf.get('ct3', '')
         conf_title = self._sanitize_filename(conf.get('confTitle', 'unknown'))
-        conf_date  = conf.get('confDate', '').replace('-', '')
+        conf_date  = conf.get('confDate', '')  # "YYYY-MM-DD" or "YYYYMMDD"
 
         self.master.after(0, self.w3_progress_bar.config, {'mode': 'indeterminate'})
         self.master.after(0, self.w3_progress_bar.start)
+
+        has_stt = bool(self.stt_password.get())
+        date_str = conf_date.replace('-', '')  # YYYYMMDD
 
         for clip in clips:
             no         = clip.get('no')
             clip_title = self._sanitize_filename(clip.get('movieTitle', f'clip_{no}'))
             base       = os.path.join(
-                DOWNLOAD_DIR, f"{conf_date}_{conf_title}_{clip_title}")
-            try:
-                vv  = int(time.time())
-                url = (f"{W3_BASE}/main/service/smi.do?cmd=smiList"
-                       f"&no={no}&mc={mc}&ct1={ct1}&ct2={ct2}&ct3={ct3}"
-                       f"&v=20220203&vv={vv}")
-                r        = requests.get(url, headers=W3_HEADERS, timeout=15)
-                smi_list = r.json().get('smiList', [])
+                DOWNLOAD_DIR, f"{date_str}_{conf_title}_{clip_title}")
 
-                if not smi_list:
-                    self.update_status(f"자막 없음: {clip_title}")
-                    continue
+            written = False
 
-                if fmt == 'srt':
-                    content = self._smilist_to_srt(smi_list)
-                    outfile = base + '.srt'
-                else:
-                    content = self._smilist_to_txt(smi_list)
-                    outfile = base + '.txt'
+            # ── 1단계: STT 서버에서 자막 시도 ──
+            if has_stt:
+                real_time = clip.get('realTime', conf.get('confOpenTime', '00:00'))
+                play_time = clip.get('playTime', '')
 
-                with open(outfile, 'w', encoding='utf-8') as f:
-                    f.write(content)
-                self.update_status(
-                    f"자막 저장: {os.path.basename(outfile)} ({len(smi_list)}줄)")
+                if play_time:
+                    self.update_status(f"STT 서버 자막 수집 중: {clip_title}...")
+                    segments, err = self._fetch_stt_subtitle(conf_date, real_time, play_time)
+                    if segments:
+                        # clip_start_ms 재계산 (SRT 타임스탬프용)
+                        rt = real_time.strip()
+                        if len(rt) == 5:
+                            rt += ':00'
+                        dt_kst = datetime.strptime(f"{date_str} {rt}", "%Y%m%d %H:%M:%S")
+                        epoch = datetime(1970, 1, 1)
+                        clip_start_ms = int((dt_kst - epoch).total_seconds() * 1000) - 9 * 3600 * 1000
 
-            except Exception as e:
-                logging.error(f"W3 subtitle download error: {e}", exc_info=True)
-                self.update_status(f"자막 오류: {e}")
+                        if fmt == 'srt':
+                            content = self._stt_segments_to_srt(segments, clip_start_ms)
+                            outfile = base + '_stt.srt'
+                        else:
+                            content = self._stt_segments_to_txt(segments)
+                            outfile = base + '_stt.txt'
+
+                        try:
+                            with open(outfile, 'w', encoding='utf-8') as f:
+                                f.write(content)
+                            self.update_status(
+                                f"STT 자막 저장: {os.path.basename(outfile)} ({len(segments)}줄)")
+                            written = True
+                        except Exception as e:
+                            logging.error(f"STT subtitle save error: {e}", exc_info=True)
+                    else:
+                        self.update_status(f"STT 자막 없음 ({err}) → smiList fallback 시도...")
+                        msg = (
+                            f"STT 매칭 실패\n\n"
+                            f"오류: {err}\n\n"
+                            f"사용된 값:\n"
+                            f"  confDate   = {conf_date}\n"
+                            f"  realTime   = {real_time}\n"
+                            f"  playTime   = {play_time}\n\n"
+                            f"clip 필드 목록:\n  {list(clip.keys())}\n\n"
+                            f"conf 필드 목록:\n  {list(conf.keys())}"
+                        )
+                        logging.warning(msg)
+                        self.master.after(0, lambda m=msg: messagebox.showinfo("STT 디버그", m))
+
+            # ── 2단계: smiList API fallback ──
+            if not written:
+                try:
+                    vv  = int(time.time())
+                    url = (f"{W3_BASE}/main/service/smi.do?cmd=smiList"
+                           f"&no={no}&mc={mc}&ct1={ct1}&ct2={ct2}&ct3={ct3}"
+                           f"&v=20220203&vv={vv}")
+                    r        = requests.get(url, headers=W3_HEADERS, timeout=15)
+                    smi_list = r.json().get('smiList', [])
+
+                    if not smi_list:
+                        self.update_status(f"자막 없음: {clip_title}")
+                        continue
+
+                    if fmt == 'srt':
+                        content = self._smilist_to_srt(smi_list)
+                        outfile = base + '.srt'
+                    else:
+                        content = self._smilist_to_txt(smi_list)
+                        outfile = base + '.txt'
+
+                    with open(outfile, 'w', encoding='utf-8') as f:
+                        f.write(content)
+                    self.update_status(
+                        f"자막 저장 (smiList): {os.path.basename(outfile)} ({len(smi_list)}줄)")
+
+                except Exception as e:
+                    logging.error(f"W3 subtitle download error: {e}", exc_info=True)
+                    self.update_status(f"자막 오류: {e}")
 
         self.master.after(0, self.w3_progress_bar.stop)
         self.master.after(0, self.w3_progress_bar.config,
@@ -1667,6 +1881,337 @@ class SeminarGUI:
         )
         if filepath:
             self.selenium_driver_path.set(filepath)
+
+    # ── STT 서버 설정 ──
+
+    def _open_stt_settings_dialog(self):
+        """STT 자막 서버 설정 다이얼로그를 엽니다."""
+        dialog = tk.Toplevel(self.master)
+        dialog.title("STT 자막 서버 설정")
+        dialog.resizable(False, False)
+        dialog.transient(self.master)
+        dialog.grab_set()
+
+        frame = ttk.Frame(dialog, padding=15)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        def row(label, var, show=''):
+            f = ttk.Frame(frame)
+            f.pack(fill=tk.X, pady=3)
+            ttk.Label(f, text=label, width=18, anchor=tk.W).pack(side=tk.LEFT)
+            ttk.Entry(f, textvariable=var, width=36, show=show).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        row("서버 주소:", self.stt_host)
+        row("사용자명:", self.stt_user)
+        row("비밀번호:", self.stt_password, show='*')
+        row("기본 경로:", self.stt_base_path)
+
+        ttk.Label(frame,
+                  text="비밀번호 입력 후 자막 다운로드(SRT/TXT) 버튼이 활성화됩니다.",
+                  foreground='gray').pack(anchor=tk.W, pady=(8, 0))
+
+        # 테스트 결과 텍스트
+        test_out = tk.Text(frame, height=8, width=55, state=tk.DISABLED,
+                           font=('Courier', 9))
+        test_out.pack(fill=tk.X, pady=(8, 0))
+
+        def run_test():
+            date_input = test_date_var.get().strip().replace('-', '')
+            if not date_input:
+                messagebox.showwarning("입력 필요", "테스트할 날짜를 입력하세요.", parent=dialog)
+                return
+            test_btn.config(state=tk.DISABLED, text="테스트 중...")
+
+            def do_test():
+                lines = []
+                try:
+                    import paramiko
+                    ssh = paramiko.SSHClient()
+                    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                    ssh.connect(self.stt_host.get(), port=22,
+                                username=self.stt_user.get(),
+                                password=self.stt_password.get(), timeout=10)
+                    sftp = ssh.open_sftp()
+                    lines.append(f"[OK] SFTP 연결 성공\n")
+
+                    # 날짜 형식 두 가지 모두 시도 (20260407 / 2026-04-07)
+                    d8 = date_input  # 이미 replace('-','') 처리됨
+                    d_dash = f"{d8[:4]}-{d8[4:6]}-{d8[6:]}"
+                    base_path_root = self.stt_base_path.get()
+
+                    base = None
+                    for candidate in [d8, d_dash]:
+                        try:
+                            p = f"{base_path_root}/{candidate}"
+                            sftp.listdir(p)
+                            base = p
+                            lines.append(f"[OK] 경로: {p}\n")
+                            break
+                        except FileNotFoundError:
+                            lines.append(f"[없음] {p}\n")
+
+                    if base is None:
+                        sftp.close(); ssh.close()
+                        return lines
+
+                    dirs = sftp.listdir(base)
+                    lines.append(f"디렉토리: {dirs}\n")
+
+                    for d in dirs:
+                        dp = f"{base}/{d}"
+                        try:
+                            files = sftp.listdir(dp)
+                            done_files = [f for f in files if f.endswith('.txt.done')]
+                            lines.append(f"\n[{d}] 파일 {len(done_files)}개: {done_files}")
+                            for fname in done_files:
+                                fp = f"{dp}/{fname}"
+                                fstat = sftp.stat(fp)
+                                with sftp.open(fp, 'rb') as fh:
+                                    head = fh.read(256).decode('utf-8', errors='ignore')
+                                first = head.split('\n')[0]
+                                try:
+                                    ts = json.loads(first).get('recv-timestamp', '?')
+                                    lines.append(f"  첫 recv-timestamp: {ts}")
+                                except Exception:
+                                    lines.append(f"  첫 줄 파싱 실패: {first[:80]}")
+                        except Exception as e:
+                            lines.append(f"\n[{d}] 접근 오류: {e}")
+
+                    sftp.close(); ssh.close()
+                except ImportError:
+                    lines.append("[오류] paramiko 미설치 (pip install paramiko)")
+                except Exception as e:
+                    lines.append(f"[오류] {e}")
+                return lines
+
+            def finish(lines):
+                result = '\n'.join(lines)
+                test_out.config(state=tk.NORMAL)
+                test_out.delete('1.0', tk.END)
+                test_out.insert(tk.END, result)
+                test_out.config(state=tk.DISABLED)
+                test_btn.config(state=tk.NORMAL, text="연결 테스트")
+
+            def worker():
+                result_lines = do_test()
+                dialog.after(0, finish, result_lines)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        # 날짜 입력 + 테스트 버튼
+        test_row = ttk.Frame(frame)
+        test_row.pack(fill=tk.X, pady=(6, 0))
+        test_date_var = tk.StringVar(value=datetime.today().strftime('%Y%m%d'))
+        ttk.Label(test_row, text="테스트 날짜:").pack(side=tk.LEFT)
+        ttk.Entry(test_row, textvariable=test_date_var, width=12).pack(side=tk.LEFT, padx=(4, 8))
+        test_btn = ttk.Button(test_row, text="연결 테스트", command=run_test)
+        test_btn.pack(side=tk.LEFT)
+
+        def on_close():
+            self._save_config()
+            if self.w3_movie_data:
+                self._set_w3_dl_state(tk.NORMAL, has_sami=(self.w3_sami_is == '1'))
+            dialog.destroy()
+
+        ttk.Button(frame, text="확인", command=on_close).pack(anchor=tk.E, pady=(8, 0))
+
+        dialog.update_idletasks()
+        pw = self.master.winfo_x() + self.master.winfo_width() // 2
+        ph = self.master.winfo_y() + self.master.winfo_height() // 2
+        dialog.geometry(f"+{pw - dialog.winfo_width() // 2}+{ph - dialog.winfo_height() // 2}")
+
+    # ── STT 자막 페치 ──
+
+    def _fetch_stt_subtitle(self, conf_date, real_time_str, play_time_str):
+        """STT 서버 SFTP에서 해당 클립에 해당하는 자막 세그먼트를 반환합니다.
+
+        Returns:
+            (segments: list | None, error: str | None)
+        """
+        try:
+            import paramiko
+        except ImportError:
+            return None, "paramiko 미설치 (pip install paramiko)"
+
+        date_str = conf_date.replace('-', '')  # YYYYMMDD
+
+        # realTime 정규화 → "HH:MM:SS"
+        rt = real_time_str.strip()
+        if len(rt) == 5:   # "HH:MM"
+            rt += ':00'
+        elif len(rt) < 8:
+            rt = rt.ljust(8, '0')
+
+        # 클립 시작 → Unix ms (KST = UTC+9)
+        try:
+            dt_kst = datetime.strptime(f"{date_str} {rt}", "%Y%m%d %H:%M:%S")
+            epoch = datetime(1970, 1, 1)
+            clip_start_ms = int((dt_kst - epoch).total_seconds() * 1000) - 9 * 3600 * 1000
+        except ValueError as e:
+            return None, f"시각 파싱 오류: {e}"
+
+        # playTime → duration ms
+        parts = play_time_str.split(':')
+        try:
+            if len(parts) == 3:
+                dur_ms = (int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])) * 1000
+            elif len(parts) == 2:
+                dur_ms = (int(parts[0]) * 60 + int(parts[1])) * 1000
+            else:
+                dur_ms = 0
+        except ValueError:
+            dur_ms = 0
+
+        if dur_ms <= 0:
+            return None, "클립 재생 시간 정보 없음"
+
+        clip_end_ms = clip_start_ms + dur_ms
+
+        # SFTP 연결
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        try:
+            ssh.connect(
+                self.stt_host.get(), port=22,
+                username=self.stt_user.get(),
+                password=self.stt_password.get(),
+                timeout=15,
+            )
+            sftp = ssh.open_sftp()
+        except Exception as e:
+            return None, f"SFTP 연결 실패: {e}"
+
+        try:
+            # 날짜 디렉토리 형식 자동 감지 (20260407 또는 2026-04-07)
+            d_dash = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
+            base_path = None
+            for candidate in [date_str, d_dash]:
+                try:
+                    p = f"{self.stt_base_path.get()}/{candidate}"
+                    sftp.listdir(p)
+                    base_path = p
+                    break
+                except FileNotFoundError:
+                    continue
+            if base_path is None:
+                return None, f"서버 경로 없음: {date_str} / {d_dash}"
+
+            try:
+                dirs = sftp.listdir(base_path)
+            except Exception as e:
+                return None, f"서버 경로 접근 오류: {e}"
+
+            best_segments = None
+
+            for d in dirs:
+                dir_path = f"{base_path}/{d}"
+                try:
+                    files = [f for f in sftp.listdir(dir_path) if f.endswith('.txt.done')]
+                except Exception:
+                    continue
+
+                for fname in files:
+                    fpath = f"{dir_path}/{fname}"
+                    try:
+                        # 파일 크기 조회
+                        fstat = sftp.stat(fpath)
+                        fsize = fstat.st_size
+
+                        # 첫 줄 → 시작 recv-timestamp 확인
+                        with sftp.open(fpath, 'rb') as fh:
+                            head = fh.read(512).decode('utf-8', errors='ignore')
+                        first_line = head.split('\n')[0].strip()
+                        if not first_line:
+                            continue
+                        first_data = json.loads(first_line)
+                        first_ts = first_data.get('recv-timestamp', 0)
+
+                        # 마지막 줄 → 종료 recv-timestamp 확인
+                        with sftp.open(fpath, 'rb') as fh:
+                            fh.seek(max(0, fsize - 4096))
+                            tail = fh.read().decode('utf-8', errors='ignore')
+                        last_lines = [l for l in tail.split('\n') if l.strip()]
+                        if not last_lines:
+                            continue
+                        last_data = json.loads(last_lines[-1])
+                        last_ts = last_data.get('recv-timestamp', 0)
+
+                        # 겹치지 않으면 건너뜀
+                        if first_ts > clip_end_ms or last_ts < clip_start_ms:
+                            continue
+
+                        # 전체 파일 읽기 후 필터링
+                        with sftp.open(fpath, 'rb') as fh:
+                            raw = fh.read()
+                        content = raw.decode('utf-8', errors='ignore')
+
+                        segments = []
+                        for line in content.split('\n'):
+                            line = line.strip()
+                            if not line:
+                                continue
+                            try:
+                                item = json.loads(line)
+                            except json.JSONDecodeError:
+                                continue
+                            recv_ts = item.get('recv-timestamp', 0)
+                            if clip_start_ms <= recv_ts < clip_end_ms:
+                                segments.append(item)
+
+                        if segments and (best_segments is None or
+                                         len(segments) > len(best_segments)):
+                            best_segments = segments
+                            logging.debug(
+                                f"STT match: {d}/{fname}, {len(segments)} segments")
+
+                    except Exception as e:
+                        logging.debug(f"STT file read error {fpath}: {e}")
+                        continue
+
+            return (best_segments, None) if best_segments else (None, "해당 클립에 매칭되는 자막 없음")
+
+        finally:
+            try:
+                sftp.close()
+            except Exception:
+                pass
+            try:
+                ssh.close()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _stt_segments_to_srt(segments, clip_start_ms):
+        """STT 세그먼트 목록을 SRT 문자열로 변환합니다."""
+        def to_ts(ms):
+            ms = max(0, int(ms))
+            h, rem = divmod(ms, 3600000)
+            m, rem = divmod(rem, 60000)
+            s, ms_part = divmod(rem, 1000)
+            return f"{h:02d}:{m:02d}:{s:02d},{ms_part:03d}"
+
+        lines = []
+        idx = 1
+        for item in segments:
+            text = item.get('transcript', '').strip()
+            if not text:
+                continue
+            recv_ts  = item.get('recv-timestamp', 0)
+            seg_dur  = item.get('segment-duration', 3000)  # ms 단위 가정
+            start_ms = recv_ts - clip_start_ms
+            end_ms   = start_ms + seg_dur
+            lines.append(f"{idx}\n{to_ts(start_ms)} --> {to_ts(end_ms)}\n{text}\n")
+            idx += 1
+        return '\n'.join(lines)
+
+    @staticmethod
+    def _stt_segments_to_txt(segments):
+        """STT 세그먼트 목록을 순수 텍스트로 변환합니다."""
+        return '\n'.join(
+            item.get('transcript', '').strip()
+            for item in segments
+            if item.get('transcript', '').strip()
+        )
 
     @staticmethod
     def extract_text_from_smi(filepath):
