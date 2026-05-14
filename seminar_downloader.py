@@ -1740,7 +1740,7 @@ class SeminarGUI:
 
                 if play_time:
                     self.update_status(f"STT 서버 자막 수집 중: {clip_title}...")
-                    segments, err = self._fetch_stt_subtitle(conf_date, real_time, play_time)
+                    segments, err = self._fetch_stt_subtitle(conf_date, real_time, play_time, conf)
                     if segments:
                         # clip_start_ms 재계산 (SRT 타임스탬프용)
                         rt = real_time.strip()
@@ -2150,7 +2150,7 @@ class SeminarGUI:
 
     # ── STT 자막 페치 ──
 
-    def _fetch_stt_subtitle(self, conf_date, real_time_str, play_time_str):
+    def _fetch_stt_subtitle(self, conf_date, real_time_str, play_time_str, conf=None):
         """STT 서버 SFTP에서 해당 클립에 해당하는 자막 세그먼트를 반환합니다.
 
         Returns:
@@ -2225,9 +2225,18 @@ class SeminarGUI:
                 return None, f"서버 경로 없음: {date_str} / {d_dash}"
 
             try:
-                dirs = sftp.listdir(base_path)
+                available_dirs = sftp.listdir(base_path)
             except Exception as e:
                 return None, f"서버 경로 접근 오류: {e}"
+
+            # 위원회 디렉토리 매칭
+            if conf:
+                mc        = conf.get('mc', '')
+                comm_name = self.w3_committee_map.get(mc, '') or conf.get('confTitle', '')
+                matched   = self._match_committee_dirs(comm_name, available_dirs)
+                dirs      = matched if matched else available_dirs
+            else:
+                dirs = available_dirs
 
             best_segments = None
 
