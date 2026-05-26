@@ -2,19 +2,25 @@
 # macOS 전용 PyInstaller 스펙 파일
 from PyInstaller.utils.hooks import collect_all
 ttkbs_datas, ttkbs_binaries, ttkbs_hiddenimports = collect_all('ttkbootstrap')
+selenium_datas, selenium_binaries, selenium_hiddenimports = collect_all('selenium')
 
 a = Analysis(
     ['seminar_downloader.py'],
     pathex=[],
-    binaries=[('build_temp/ffmpeg', '.')] + ttkbs_binaries,
-    datas=[('default_config.json', '.')] + ttkbs_datas,
-    hiddenimports=ttkbs_hiddenimports + [
+    binaries=[('build_temp/ffmpeg', '.')] + ttkbs_binaries + selenium_binaries,
+    datas=[('default_config.json', '.')] + ttkbs_datas + selenium_datas,
+    hiddenimports=ttkbs_hiddenimports + selenium_hiddenimports + [
         'selenium',
         'selenium.webdriver',
         'selenium.webdriver.chrome',
+        'selenium.webdriver.chrome.webdriver',
         'selenium.webdriver.chrome.service',
         'selenium.webdriver.chrome.options',
+        'selenium.webdriver.remote.webdriver',
+        'selenium.webdriver.remote.remote_connection',
+        'selenium.webdriver.remote.errorhandler',
         'selenium.webdriver.common.by',
+        'selenium.webdriver.common.utils',
         'selenium.webdriver.support.ui',
         'selenium.webdriver.support.expected_conditions',
         'webdriver_manager',

@@ -40,7 +40,7 @@ from selenium_subtitle_extractor import SeleniumSubtitleExtractor # Added
 
 
 # --- Constants ---
-APP_VERSION = "1.0"
+APP_VERSION = "2.2.1"
 GITHUB_REPO = "doogiekang/Dodio_downloader"
 UPDATE_CHECK_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 UPDATE_INSTALLER_URL = ""  # 최신 릴리즈에서 자동으로 가져옴
@@ -897,7 +897,10 @@ class SeminarGUI:
             self.master.after(0, progress_bar.start)
 
             # Use ffmpeg to directly download and mux the HLS stream
-            cmd = [self._get_ffmpeg_path(), '-i', m3u8_url, '-c', 'copy', '-bsf:a', 'aac_adtstoasc', '-y', '-loglevel', 'error', video_filename]
+            cmd = [self._get_ffmpeg_path(),
+                   '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '30',
+                   '-i', m3u8_url,
+                   '-c', 'copy', '-bsf:a', 'aac_adtstoasc', '-y', '-loglevel', 'error', video_filename]
 
             # creationflags는 Windows 전용 (콘솔 창 숨김)
             extra_kwargs = {}
@@ -1600,7 +1603,9 @@ class SeminarGUI:
                             if m3u8_path.startswith('//') else m3u8_path)
 
                 self.update_status(f"다운로드 중: {os.path.basename(filename)}...")
-                cmd = [self._get_ffmpeg_path(), '-i', m3u8_url,
+                cmd = [self._get_ffmpeg_path(),
+                       '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '30',
+                       '-i', m3u8_url,
                        '-c', 'copy', '-bsf:a', 'aac_adtstoasc',
                        '-y', '-loglevel', 'error', filename]
                 extra = {}
