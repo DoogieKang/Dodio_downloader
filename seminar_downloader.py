@@ -576,12 +576,19 @@ class SeminarGUI:
         is_pressconf = content_item.get('content_type') == 'PRESSCONF'
 
         if is_pressconf:
-            # PRESSCONF: 영상 / 자막 버튼 분리
-            video_btn = ttk.Button(current_download_button_frame, text="영상 다운로드 (저화질)",
-                                   command=lambda s=content_item: self.start_download_thread('', s))
-            if not self.ffmpeg_ready or is_downloading:
-                video_btn.config(state=tk.DISABLED)
-            video_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=5)
+            # PRESSCONF: 화질별 영상 버튼 3개 + 자막 버튼
+            pressconf_qualities = [
+                ('videoFile1', '고화질'),
+                ('videoFile2', '중화질'),
+                ('videoFile3', '저화질'),
+            ]
+            for file_key, quality_name in pressconf_qualities:
+                btn = ttk.Button(current_download_button_frame,
+                                 text=f"영상 다운로드 ({quality_name})",
+                                 command=lambda s=content_item, k=file_key: self.start_download_thread(k, s))
+                if not self.ffmpeg_ready or is_downloading:
+                    btn.config(state=tk.DISABLED)
+                btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=5)
 
             subtitle_btn = ttk.Button(current_download_button_frame, text="자막 다운로드 (TXT)",
                                       command=lambda s=content_item: self.start_download_ai_subtitle_thread(s))
@@ -846,7 +853,7 @@ class SeminarGUI:
         if not seminar_data:
             messagebox.showerror("오류", "다운로드 정보가 올바르지 않습니다.")
             return
-        # PRESSCONF는 contentInfo API로 URL을 받아오므로 빈 URL 허용
+        # PRESSCONF는 contentInfo API로 URL을 받아오므로 file_key(videoFile1/2/3) 허용
         if not url and seminar_data.get('content_type') != 'PRESSCONF':
             messagebox.showerror("오류", "다운로드 URL이 없습니다.")
             return
@@ -866,16 +873,20 @@ class SeminarGUI:
         subtitle_url = seminar.get('subtitle_url')
         ai_cc_id = None
 
-        # PRESSCONF: contentInfo API로 최고화질 URL + aiCC 취득
+        # PRESSCONF: contentInfo API로 선택 화질 URL + aiCC 취득
+        # url 자리에 'videoFile1'/'videoFile2'/'videoFile3' 키가 전달됨
         if seminar.get('content_type') == 'PRESSCONF':
-            self.update_status(f"기자회견 화질 정보 조회 중: {title}...")
+            file_key = url if url in ('videoFile1', 'videoFile2', 'videoFile3') else 'videoFile1'
+            quality_label = {'videoFile1': '고화질', 'videoFile2': '중화질', 'videoFile3': '저화질'}
+            self.update_status(f"기자회견 화질 정보 조회 중 ({quality_label.get(file_key)}): {title}...")
             info = self._fetch_content_info(seminar['id'], seminar.get('sid', '0'), 'PRESSCONF')
             if info:
-                url = info.get('videoFile3') or url
+                url = info.get(file_key) or info.get('videoFile1') or url
                 ai_cc_id = info.get('aiCC')
-                logging.debug(f"PRESSCONF contentInfo: url={url}, aiCC={ai_cc_id}")
+                logging.debug(f"PRESSCONF contentInfo: file_key={file_key}, url={url}, aiCC={ai_cc_id}")
             else:
                 self.update_status("화질 정보 조회 실패.")
+                url = ''
 
         if not url:
             self.update_status("오류: 다운로드 URL이 없습니다.")

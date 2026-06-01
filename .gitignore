@@ -11,4 +11,3 @@ seminars_download/
 *.bak
 backup_seminar_downloader/
 ffmpeg.zip
-default_config.json
