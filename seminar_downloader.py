@@ -40,7 +40,7 @@ from selenium_subtitle_extractor import SeleniumSubtitleExtractor # Added
 
 
 # --- Constants ---
-APP_VERSION = "2.2.3"
+APP_VERSION = "2.2.4"
 GITHUB_REPO = "doogiekang/Dodio_downloader"
 UPDATE_CHECK_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 UPDATE_INSTALLER_URL = ""  # 최신 릴리즈에서 자동으로 가져옴
@@ -615,6 +615,7 @@ class SeminarGUI:
 
                     if not self.ffmpeg_ready or is_downloading or not url:
                         btn.config(state=tk.DISABLED)
+                    btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=5)
             else:
                 # contentList API가 URL을 반환하지 않는 경우 → contentInfo로 화질별 다운로드
                 for file_key, quality_name in [('videoFile1', '고화질'), ('videoFile2', '중화질'), ('videoFile3', '저화질')]:
