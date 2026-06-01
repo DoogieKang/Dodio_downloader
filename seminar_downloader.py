@@ -40,7 +40,7 @@ from selenium_subtitle_extractor import SeleniumSubtitleExtractor # Added
 
 
 # --- Constants ---
-APP_VERSION = "2.2.5"
+APP_VERSION = "2.2.6"
 GITHUB_REPO = "doogiekang/Dodio_downloader"
 UPDATE_CHECK_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 UPDATE_INSTALLER_URL = ""  # 최신 릴리즈에서 자동으로 가져옴
@@ -927,7 +927,7 @@ class SeminarGUI:
                 self.update_status(f"비디오 다운로드 완료: {os.path.basename(video_filename)} ({size:.1f}MB)")
                 logging.debug(f"Video download complete: {video_filename} ({size:.1f}MB)")
 
-                # 기존 자막 URL 방식 (FULL 세미나) - PRESSCONF는 별도 버튼으로 분리
+                # 자막 다운로드: smi/vtt URL 우선, 없으면 aiCC API
                 if subtitle_url:
                     self.update_status(f"자막 다운로드 중: {os.path.basename(base_filename)}.smi...")
                     subtitle_extension = ".smi" if "smi" in subtitle_url.lower() else (".vtt" if "vtt" in subtitle_url.lower() else ".txt")
@@ -947,7 +947,18 @@ class SeminarGUI:
                         self.master.after(0, self.update_status, f"자막 다운로드 중 예외 발생: {os.path.basename(subtitle_filename)}. 오류: {se}")
                         logging.error(f"Exception during subtitle download for {subtitle_url}: {se}", exc_info=True)
                         self.master.after(0, messagebox.showerror, "자막 다운로드 오류", f"자막 다운로드 중 예기치 않은 오류가 발생했습니다:\n{se}")
-                
+                elif ai_cc_id:
+                    try:
+                        self.update_status(f"AI 자막 다운로드 중: {title}...")
+                        result = self._download_ai_subtitle(ai_cc_id, base_filename)
+                        if result:
+                            self.update_status(f"AI 자막 완료: {os.path.basename(result)}")
+                        else:
+                            self.update_status("자막 없음")
+                    except Exception as se:
+                        logging.warning(f"AI 자막 다운로드 실패 (무시): {se}")
+                        self.update_status("자막 다운로드 실패 (영상은 저장됨)")
+
             else:
                  self.update_status(f"비디오 다운로드 실패: {os.path.basename(video_filename)}")
                  logging.error(f"Video download failed, file not found after ffmpeg: {video_filename}")
