@@ -40,7 +40,7 @@ from selenium_subtitle_extractor import SeleniumSubtitleExtractor # Added
 
 
 # --- Constants ---
-APP_VERSION = "2.2.4"
+APP_VERSION = "2.2.5"
 GITHUB_REPO = "doogiekang/Dodio_downloader"
 UPDATE_CHECK_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 UPDATE_INSTALLER_URL = ""  # 최신 릴리즈에서 자동으로 가져옴
@@ -139,6 +139,12 @@ class SeminarGUI:
         self.w3_fetch_thread = None
         self.w3_download_thread = None
 
+        # --- 장바구니 ---
+        self.download_cart = []
+        self.cart_download_thread = None
+        self.full_current_item = None
+        self.press_current_item = None
+
         self.content_list_url = "https://vplatform.assembly.go.kr/api/api/cms/content/contentList"
 
         # Store headers globally for reuse in download function
@@ -166,10 +172,12 @@ class SeminarGUI:
         self.press_conference_tab = ttk.Frame(self.notebook, padding="12")
 
         self.committee_tab = ttk.Frame(self.notebook, padding="12")
+        self.cart_tab = ttk.Frame(self.notebook, padding="12")
 
         self.notebook.add(self.downloader_tab, text='세미나')
         self.notebook.add(self.press_conference_tab, text='기자회견')
         self.notebook.add(self.committee_tab, text='상임위')
+        self.notebook.add(self.cart_tab, text='장바구니 🛒')
 
         # --- Build Downloader Tab ---
         self._create_downloader_tab(self.downloader_tab)
@@ -179,6 +187,9 @@ class SeminarGUI:
 
         # --- Build Committee Tab ---
         self._create_committee_tab(self.committee_tab)
+
+        # --- Build Cart Tab ---
+        self._create_cart_tab(self.cart_tab)
 
         # --- 상임위 탭: 캐시 파일에서 로드 (탭 전환 시) ---
         self._committee_loaded = False
@@ -310,8 +321,29 @@ class SeminarGUI:
                                          style='Muted.TLabel')
         selected_title_label.pack(fill=tk.X, pady=(0, 6))
 
-        download_button_frame = ttk.Frame(dl_panel)
-        download_button_frame.pack(fill=tk.X)
+        ctrl_row = ttk.Frame(dl_panel)
+        ctrl_row.pack(fill=tk.X)
+
+        ttk.Label(ctrl_row, text="화질 선택").pack(side=tk.LEFT, padx=(0, 4))
+        quality_var = tk.StringVar(value='고화질')
+        ttk.Combobox(ctrl_row, textvariable=quality_var,
+                     values=['고화질', '중화질', '저화질'],
+                     state='readonly', width=10).pack(side=tk.LEFT, padx=(0, 8))
+
+        add_cart_btn = ttk.Button(ctrl_row, text="장바구니 추가",
+                                  command=lambda ctf=content_type_filter: self._add_content_to_cart(ctf),
+                                  state=tk.DISABLED)
+        add_cart_btn.pack(side=tk.LEFT, padx=(0, 8))
+
+        if content_type_filter == "FULL":
+            subtitle_btn = ttk.Button(ctrl_row, text="자막 다운로드 (TXT)",
+                                      command=lambda: self.start_download_subtitle_selenium_thread(self.full_current_item) if self.full_current_item else None,
+                                      state=tk.DISABLED)
+        else:
+            subtitle_btn = ttk.Button(ctrl_row, text="자막 다운로드 (TXT)",
+                                      command=lambda: self.start_download_ai_subtitle_thread(self.press_current_item) if self.press_current_item else None,
+                                      state=tk.DISABLED)
+        subtitle_btn.pack(side=tk.LEFT)
 
         if content_type_filter == "FULL":
             self.downloader_tree = tree
@@ -319,16 +351,20 @@ class SeminarGUI:
             self.downloader_progress_bar = progress_bar
             self.downloader_refresh_button = refresh_button
             self.downloader_selected_title_label = selected_title_label
-            self.downloader_download_button_frame = download_button_frame
             self.downloader_search_var = search_var
+            self.full_quality_var = quality_var
+            self.full_add_cart_btn = add_cart_btn
+            self.full_subtitle_btn = subtitle_btn
         elif content_type_filter == "PRESS":
             self.press_conference_tree = tree
             self.press_conference_progress_label = progress_label
             self.press_conference_progress_bar = progress_bar
             self.press_conference_refresh_button = refresh_button
             self.press_conference_selected_title_label = selected_title_label
-            self.press_conference_download_button_frame = download_button_frame
             self.press_conference_search_var = search_var
+            self.press_quality_var = quality_var
+            self.press_add_cart_btn = add_cart_btn
+            self.press_subtitle_btn = subtitle_btn
 
         search_var.trace_add('write', lambda *args, ctf=content_type_filter: self._apply_search_filter(ctf))
         tree.bind("<<TreeviewSelect>>", lambda event, ctf=content_type_filter: self.on_content_select(event, ctf))
@@ -433,8 +469,8 @@ class SeminarGUI:
                      values=['고화질', '중화질', '저화질'],
                      state='readonly', width=14).pack(fill=tk.X, pady=(0, 6))
 
-        self.w3_dl_video_btn = ttk.Button(dl_frame, text="영상 다운로드",
-                                           command=self._start_w3_video_download,
+        self.w3_dl_video_btn = ttk.Button(dl_frame, text="장바구니 추가",
+                                           command=self._add_w3_to_cart,
                                            state=tk.DISABLED, width=16)
         self.w3_dl_video_btn.pack(fill=tk.X, pady=(0, 4))
 
@@ -547,99 +583,49 @@ class SeminarGUI:
             return "N/A"
 
     def on_content_select(self, event=None, content_type_filter=None):
-        # Determine which treeview is active and get its associated widgets
         if content_type_filter == "FULL":
             current_tree = self.downloader_tree
             current_selected_title_label = self.downloader_selected_title_label
-            current_download_button_frame = self.downloader_download_button_frame
-        elif content_type_filter == "PRESS":
+            add_cart_btn = self.full_add_cart_btn
+            subtitle_btn = self.full_subtitle_btn
+        elif content_type_filter in ("PRESS", "PRESSCONF"):
+            content_type_filter = "PRESS"
             current_tree = self.press_conference_tree
             current_selected_title_label = self.press_conference_selected_title_label
-            current_download_button_frame = self.press_conference_download_button_frame
+            add_cart_btn = self.press_add_cart_btn
+            subtitle_btn = self.press_subtitle_btn
         else:
-            return # Should not happen
-
-        for widget in current_download_button_frame.winfo_children():
-            widget.destroy()
+            return
 
         selected_items = current_tree.selection()
         if not selected_items:
             current_selected_title_label.config(text="선택: 없음")
+            if content_type_filter == "FULL":
+                self.full_current_item = None
+            else:
+                self.press_current_item = None
+            add_cart_btn.config(state=tk.DISABLED)
+            subtitle_btn.config(state=tk.DISABLED)
             return
 
         item_id_str = current_tree.item(selected_items[0], 'tags')[0]
         content_item = self.seminars_by_id.get(item_id_str)
-            
+
         if not content_item:
             current_selected_title_label.config(text="선택: 없음 (데이터 오류)")
             return
-            
-        current_selected_title_label.config(text=f"선택: {content_item.get('title', 'N/A')}")
-        
-        is_downloading = self.download_thread and self.download_thread.is_alive()
-        
-        vod_list = content_item.get('vod_list', [])
-        is_pressconf = content_item.get('content_type') == 'PRESSCONF'
 
-        if is_pressconf:
-            # PRESSCONF: 화질별 영상 버튼 3개 + 자막 버튼
-            pressconf_qualities = [
-                ('videoFile1', '고화질'),
-                ('videoFile2', '중화질'),
-                ('videoFile3', '저화질'),
-            ]
-            for file_key, quality_name in pressconf_qualities:
-                btn = ttk.Button(current_download_button_frame,
-                                 text=f"영상 다운로드 ({quality_name})",
-                                 command=lambda s=content_item, k=file_key: self.start_download_thread(k, s))
-                if not self.ffmpeg_ready or is_downloading:
-                    btn.config(state=tk.DISABLED)
-                btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=5)
-
-            subtitle_btn = ttk.Button(current_download_button_frame, text="자막 다운로드 (TXT)",
-                                      command=lambda s=content_item: self.start_download_ai_subtitle_thread(s))
-            if is_downloading:
-                subtitle_btn.config(state=tk.DISABLED)
-            subtitle_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=5)
+        if content_type_filter == "FULL":
+            self.full_current_item = content_item
         else:
-            # FULL: vod_list에 URL이 있으면 직접 사용, 없으면 contentInfo 방식
-            if vod_list:
-                quality_label = {'High': '고화질', 'Medium': '중화질', 'Low': '저화질'}
-                for vod in vod_list:
-                    quality = vod.get('vodRes', '알수없음')
-                    url = vod.get('vodUrl')
-                    label = f"영상 다운로드 ({quality_label.get(quality, quality)})"
+            self.press_current_item = content_item
 
-                    btn = ttk.Button(current_download_button_frame, text=label,
-                                     command=lambda u=url, s=content_item: self.start_download_thread(u, s))
+        current_selected_title_label.config(text=f"선택: {content_item.get('title', 'N/A')}")
 
-                    if not self.ffmpeg_ready or is_downloading or not url:
-                        btn.config(state=tk.DISABLED)
-                    btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=5)
-            else:
-                # contentList API가 URL을 반환하지 않는 경우 → contentInfo로 화질별 다운로드
-                for file_key, quality_name in [('videoFile1', '고화질'), ('videoFile2', '중화질'), ('videoFile3', '저화질')]:
-                    btn = ttk.Button(current_download_button_frame,
-                                     text=f"영상 다운로드 ({quality_name})",
-                                     command=lambda s=content_item, k=file_key: self.start_download_thread(k, s))
-                    if not self.ffmpeg_ready or is_downloading:
-                        btn.config(state=tk.DISABLED)
-
-                    btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=5)
-
-            # Selenium 자막 버튼 (FULL 전용)
-            selenium_installed = False
-            try:
-                import selenium
-                selenium_installed = True
-            except ImportError:
-                pass
-
-            selenium_btn = ttk.Button(current_download_button_frame, text="자막 다운로드 (TXT)",
-                                      command=lambda s=content_item: self.start_download_subtitle_selenium_thread(s))
-            if not selenium_installed or is_downloading:
-                selenium_btn.config(state=tk.DISABLED)
-            selenium_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=5)
+        is_cart_downloading = self.cart_download_thread and self.cart_download_thread.is_alive()
+        btn_state = tk.DISABLED if (not self.ffmpeg_ready or is_cart_downloading) else tk.NORMAL
+        add_cart_btn.config(state=btn_state)
+        subtitle_btn.config(state=tk.DISABLED if is_cart_downloading else tk.NORMAL)
         
     def _get_default_config_path(self):
         if getattr(sys, 'frozen', False):
@@ -1582,6 +1568,130 @@ class SeminarGUI:
             target=self._w3_download_videos,
             args=(self.w3_current_conf, clips, self.w3_quality_var.get()), daemon=True)
         self.w3_download_thread.start()
+
+    def _add_w3_to_cart(self):
+        idxs = list(self.w3_clip_listbox.curselection())
+        if not idxs:
+            messagebox.showwarning("선택 없음", "추가할 클립을 선택해주세요.")
+            return
+        clips = [self.w3_movie_data[i] for i in idxs if i < len(self.w3_movie_data)]
+        quality = self.w3_quality_var.get()
+        conf = self.w3_current_conf
+        import uuid
+        for clip in clips:
+            cart_item = {
+                'id': str(uuid.uuid4()),
+                'type': 'W3',
+                'display': f"{conf.get('confDate', '')}  {clip.get('movieTitle', '')}  [{quality}]",
+                'conf': conf,
+                'clip': clip,
+                'quality_name': quality,
+            }
+            self.download_cart.append(cart_item)
+            self.cart_listbox.insert(tk.END, cart_item['display'])
+        self.update_status(f"장바구니에 {len(clips)}개 추가됨")
+
+    def _add_content_to_cart(self, content_type_filter):
+        import uuid
+        if content_type_filter == "FULL":
+            item = self.full_current_item
+            quality_name = self.full_quality_var.get()
+        else:
+            item = self.press_current_item
+            quality_name = self.press_quality_var.get()
+        if not item:
+            return
+        quality_key = {'고화질': 'videoFile1', '중화질': 'videoFile2', '저화질': 'videoFile3'}.get(quality_name, 'videoFile1')
+        cart_item = {
+            'id': str(uuid.uuid4()),
+            'type': 'VPLATFORM',
+            'display': f"{item.get('date', '')[:10]}  {item.get('title', '')}  [{quality_name}]",
+            'content_item': item,
+            'quality_key': quality_key,
+            'quality_name': quality_name,
+        }
+        self.download_cart.append(cart_item)
+        self.cart_listbox.insert(tk.END, cart_item['display'])
+        self.update_status(f"장바구니 추가: {item.get('title', '')} [{quality_name}]")
+
+    def _remove_selected_from_cart(self):
+        for idx in reversed(self.cart_listbox.curselection()):
+            self.cart_listbox.delete(idx)
+            self.download_cart.pop(idx)
+
+    def _clear_cart(self):
+        self.cart_listbox.delete(0, tk.END)
+        self.download_cart.clear()
+
+    def _start_cart_download(self):
+        if not self.download_cart:
+            messagebox.showinfo("장바구니 비어있음", "다운로드할 항목이 없습니다.")
+            return
+        if self.cart_download_thread and self.cart_download_thread.is_alive():
+            messagebox.showwarning("진행 중", "이미 다운로드 중입니다.")
+            return
+        items = list(self.download_cart)
+        self.cart_download_thread = threading.Thread(
+            target=self._cart_download_worker, args=(items,), daemon=True)
+        self.cart_download_thread.start()
+
+    def _cart_download_worker(self, items):
+        total = len(items)
+        self.master.after(0, self.cart_download_btn.config, {'state': tk.DISABLED})
+        self.master.after(0, self.cart_clear_btn.config, {'state': tk.DISABLED})
+
+        for i, cart_item in enumerate(items):
+            self.master.after(0, self.cart_progress_bar.config,
+                              {'value': int(i / total * 100)})
+            try:
+                if cart_item['type'] == 'VPLATFORM':
+                    self._download_video(cart_item['quality_key'], cart_item['content_item'])
+                elif cart_item['type'] == 'W3':
+                    self._w3_download_videos(
+                        cart_item['conf'], [cart_item['clip']], cart_item['quality_name'])
+            except Exception as e:
+                logging.error(f"장바구니 다운로드 오류: {e}", exc_info=True)
+            self.master.after(0, self._remove_cart_item_by_id, cart_item['id'])
+
+        self.master.after(0, self.cart_progress_bar.config, {'value': 100})
+        self.master.after(0, self.cart_download_btn.config, {'state': tk.NORMAL})
+        self.master.after(0, self.cart_clear_btn.config, {'state': tk.NORMAL})
+        self.update_status("장바구니 다운로드 완료")
+
+    def _remove_cart_item_by_id(self, item_id):
+        for i, item in enumerate(self.download_cart):
+            if item['id'] == item_id:
+                self.download_cart.pop(i)
+                self.cart_listbox.delete(i)
+                break
+
+    def _create_cart_tab(self, parent):
+        cart_lf = ttk.LabelFrame(parent, text="다운로드 대기 목록", padding=6)
+        cart_lf.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
+
+        vsb = ttk.Scrollbar(cart_lf, orient=tk.VERTICAL)
+        self.cart_listbox = tk.Listbox(cart_lf, yscrollcommand=vsb.set,
+                                       selectmode=tk.EXTENDED,
+                                       font=(self._ui_font[0], 13),
+                                       height=15)
+        vsb.config(command=self.cart_listbox.yview)
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        self.cart_listbox.pack(fill=tk.BOTH, expand=True)
+
+        btn_row = ttk.Frame(parent)
+        btn_row.pack(fill=tk.X, pady=(0, 8))
+
+        ttk.Button(btn_row, text="선택 제거",
+                   command=self._remove_selected_from_cart).pack(side=tk.LEFT, padx=(0, 4))
+        self.cart_clear_btn = ttk.Button(btn_row, text="전체 비우기",
+                                         command=self._clear_cart)
+        self.cart_clear_btn.pack(side=tk.LEFT)
+        self.cart_download_btn = ttk.Button(btn_row, text="▶ 다운로드 시작",
+                                            command=self._start_cart_download)
+        self.cart_download_btn.pack(side=tk.RIGHT)
+
+        self.cart_progress_bar = ttk.Progressbar(parent, mode='determinate', length=400)
+        self.cart_progress_bar.pack(fill=tk.X, pady=(0, 4))
 
     def _w3_download_videos(self, conf, clips, quality='고화질'):
         mc  = conf.get('mc', '')
