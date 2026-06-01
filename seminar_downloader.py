@@ -427,6 +427,12 @@ class SeminarGUI:
         dl_frame = ttk.Frame(lower)
         dl_frame.pack(side=tk.LEFT, anchor=tk.N)
 
+        ttk.Label(dl_frame, text="화질 선택").pack(fill=tk.X, pady=(0, 2))
+        self.w3_quality_var = tk.StringVar(value='고화질')
+        ttk.Combobox(dl_frame, textvariable=self.w3_quality_var,
+                     values=['고화질', '중화질', '저화질'],
+                     state='readonly', width=14).pack(fill=tk.X, pady=(0, 6))
+
         self.w3_dl_video_btn = ttk.Button(dl_frame, text="영상 다운로드",
                                            command=self._start_w3_video_download,
                                            state=tk.DISABLED, width=16)
@@ -1573,10 +1579,10 @@ class SeminarGUI:
         clips = [self.w3_movie_data[i] for i in idxs if i < len(self.w3_movie_data)]
         self.w3_download_thread = threading.Thread(
             target=self._w3_download_videos,
-            args=(self.w3_current_conf, clips), daemon=True)
+            args=(self.w3_current_conf, clips, self.w3_quality_var.get()), daemon=True)
         self.w3_download_thread.start()
 
-    def _w3_download_videos(self, conf, clips):
+    def _w3_download_videos(self, conf, clips, quality='고화질'):
         mc  = conf.get('mc', '')
         ct1 = conf.get('ct1', '')
         ct2 = conf.get('ct2', '')
@@ -1606,8 +1612,16 @@ class SeminarGUI:
                 r   = requests.get(url, headers=W3_HEADERS, timeout=15)
                 fp  = r.json().get('filePath', {})
 
-                # 최고화질 선택 (720p > 480p > 240p)
-                m3u8_path = fp.get('720p') or fp.get('480p') or fp.get('240p')
+                # 화질 우선순위 선택
+                quality_order = {
+                    '고화질': ['720p', '480p', '240p'],
+                    '중화질': ['480p', '240p', '720p'],
+                    '저화질': ['240p', '480p', '720p'],
+                }
+                m3u8_path = next(
+                    (fp.get(k) for k in quality_order.get(quality, ['720p', '480p', '240p']) if fp.get(k)),
+                    None
+                )
                 if not m3u8_path and isinstance(fp, dict):
                     default_key = fp.get('default', '')
                     m3u8_path   = fp.get(default_key, '')
