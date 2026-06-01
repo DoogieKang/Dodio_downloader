@@ -596,11 +596,8 @@ class SeminarGUI:
                 subtitle_btn.config(state=tk.DISABLED)
             subtitle_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=5)
         else:
-            # FULL: 기존 화질별 버튼
-            if not vod_list:
-                label = ttk.Label(current_download_button_frame, text="제공되는 화질 정보 없음")
-                label.pack()
-            else:
+            # FULL: vod_list에 URL이 있으면 직접 사용, 없으면 contentInfo 방식
+            if vod_list:
                 quality_label = {'High': '고화질', 'Medium': '중화질', 'Low': '저화질'}
                 for vod in vod_list:
                     quality = vod.get('vodRes', '알수없음')
@@ -611,6 +608,14 @@ class SeminarGUI:
                                      command=lambda u=url, s=content_item: self.start_download_thread(u, s))
 
                     if not self.ffmpeg_ready or is_downloading or not url:
+                        btn.config(state=tk.DISABLED)
+            else:
+                # contentList API가 URL을 반환하지 않는 경우 → contentInfo로 화질별 다운로드
+                for file_key, quality_name in [('videoFile1', '고화질'), ('videoFile2', '중화질'), ('videoFile3', '저화질')]:
+                    btn = ttk.Button(current_download_button_frame,
+                                     text=f"영상 다운로드 ({quality_name})",
+                                     command=lambda s=content_item, k=file_key: self.start_download_thread(k, s))
+                    if not self.ffmpeg_ready or is_downloading:
                         btn.config(state=tk.DISABLED)
 
                     btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=5)
@@ -873,17 +878,18 @@ class SeminarGUI:
         subtitle_url = seminar.get('subtitle_url')
         ai_cc_id = None
 
-        # PRESSCONF: contentInfo API로 선택 화질 URL + aiCC 취득
-        # url 자리에 'videoFile1'/'videoFile2'/'videoFile3' 키가 전달됨
-        if seminar.get('content_type') == 'PRESSCONF':
+        # contentInfo API로 선택 화질 URL 취득
+        # PRESSCONF는 항상, FULL은 url 자리에 file_key('videoFile1/2/3')가 전달된 경우
+        if seminar.get('content_type') == 'PRESSCONF' or url in ('videoFile1', 'videoFile2', 'videoFile3'):
             file_key = url if url in ('videoFile1', 'videoFile2', 'videoFile3') else 'videoFile1'
             quality_label = {'videoFile1': '고화질', 'videoFile2': '중화질', 'videoFile3': '저화질'}
-            self.update_status(f"기자회견 화질 정보 조회 중 ({quality_label.get(file_key)}): {title}...")
-            info = self._fetch_content_info(seminar['id'], seminar.get('sid', '0'), 'PRESSCONF')
+            content_type = seminar.get('content_type', 'FULL')
+            self.update_status(f"화질 정보 조회 중 ({quality_label.get(file_key)}): {title}...")
+            info = self._fetch_content_info(seminar['id'], seminar.get('sid', '0'), content_type)
             if info:
                 url = info.get(file_key) or info.get('videoFile1') or url
                 ai_cc_id = info.get('aiCC')
-                logging.debug(f"PRESSCONF contentInfo: file_key={file_key}, url={url}, aiCC={ai_cc_id}")
+                logging.debug(f"contentInfo: type={content_type}, file_key={file_key}, url={url}, aiCC={ai_cc_id}")
             else:
                 self.update_status("화질 정보 조회 실패.")
                 url = ''
