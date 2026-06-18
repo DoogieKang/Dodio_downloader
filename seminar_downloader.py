@@ -40,16 +40,17 @@ from selenium_subtitle_extractor import SeleniumSubtitleExtractor # Added
 
 
 # --- Constants ---
-APP_VERSION = "2.2.6"
+APP_VERSION = "2.3.0"
 GITHUB_REPO = "doogiekang/Dodio_downloader"
 UPDATE_CHECK_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 UPDATE_INSTALLER_URL = ""  # 최신 릴리즈에서 자동으로 가져옴
 
-DOWNLOAD_DIR = os.path.join(os.path.expanduser("~"), "seminars_download")
-JSON_FILE     = os.path.join(DOWNLOAD_DIR, "all_seminars.json")
-W3_COMM_JSON  = os.path.join(DOWNLOAD_DIR, "w3_committees.json")
-W3_CONF_JSON  = os.path.join(DOWNLOAD_DIR, "w3_conferences.json")
-CONFIG_FILE   = os.path.join(DOWNLOAD_DIR, "config.json")
+DOWNLOAD_DIR    = os.path.join(os.path.expanduser("~"), "seminars_download")
+JSON_FILE       = os.path.join(DOWNLOAD_DIR, "all_seminars.json")
+SUMMARY_JSON_FILE = os.path.join(DOWNLOAD_DIR, "all_summaries.json")
+W3_COMM_JSON    = os.path.join(DOWNLOAD_DIR, "w3_committees.json")
+W3_CONF_JSON    = os.path.join(DOWNLOAD_DIR, "w3_conferences.json")
+CONFIG_FILE     = os.path.join(DOWNLOAD_DIR, "config.json")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 # --- W3 영상회의록시스템 (상임위) ---
@@ -110,9 +111,11 @@ class SeminarGUI:
         self.seminars = [] # This will be the combined list for seminars_by_id
         self.seminars_full = [] # Stores 'FULL' content (seminars)
         self.seminars_press = [] # Stores 'PRESS' content (press conferences)
+        self.seminars_summary = [] # Stores 'SUMMARY' content (summary videos)
         self.seminars_by_id = {}
         self.fetch_thread = None
         self.download_thread = None
+        self.summary_bulk_subtitle_thread = None
         self.ffmpeg_ready = self._check_ffmpeg()
         
         # --- Selenium Configuration Variables ---
@@ -144,6 +147,7 @@ class SeminarGUI:
         self.cart_download_thread = None
         self.full_current_item = None
         self.press_current_item = None
+        self.summary_current_item = None
 
         self.content_list_url = "https://vplatform.assembly.go.kr/api/api/cms/content/contentList"
 
@@ -169,18 +173,23 @@ class SeminarGUI:
         self.notebook.pack(pady=(8, 0), padx=10, fill="both", expand=True)
 
         self.downloader_tab = ttk.Frame(self.notebook, padding="12")
+        self.summary_tab = ttk.Frame(self.notebook, padding="12")
         self.press_conference_tab = ttk.Frame(self.notebook, padding="12")
 
         self.committee_tab = ttk.Frame(self.notebook, padding="12")
         self.cart_tab = ttk.Frame(self.notebook, padding="12")
 
         self.notebook.add(self.downloader_tab, text='세미나')
+        self.notebook.add(self.summary_tab, text='세미나-요약영상')
         self.notebook.add(self.press_conference_tab, text='기자회견')
         self.notebook.add(self.committee_tab, text='상임위')
         self.notebook.add(self.cart_tab, text='장바구니 🛒')
 
         # --- Build Downloader Tab ---
         self._create_downloader_tab(self.downloader_tab)
+
+        # --- Build Summary Tab ---
+        self._create_summary_tab(self.summary_tab)
 
         # --- Build Press Conference Tab ---
         self._create_press_conference_tab(self.press_conference_tab)
@@ -339,6 +348,10 @@ class SeminarGUI:
             subtitle_btn = ttk.Button(ctrl_row, text="자막 다운로드 (TXT)",
                                       command=lambda: self.start_download_subtitle_selenium_thread(self.full_current_item) if self.full_current_item else None,
                                       state=tk.DISABLED)
+        elif content_type_filter == "SUMMARY":
+            subtitle_btn = ttk.Button(ctrl_row, text="자막 다운로드 (TXT)",
+                                      command=lambda: self.start_download_subtitle_selenium_thread(self.summary_current_item) if self.summary_current_item else None,
+                                      state=tk.DISABLED)
         else:
             subtitle_btn = ttk.Button(ctrl_row, text="자막 다운로드 (TXT)",
                                       command=lambda: self.start_download_ai_subtitle_thread(self.press_current_item) if self.press_current_item else None,
@@ -355,6 +368,16 @@ class SeminarGUI:
             self.full_quality_var = quality_var
             self.full_add_cart_btn = add_cart_btn
             self.full_subtitle_btn = subtitle_btn
+        elif content_type_filter == "SUMMARY":
+            self.summary_tree = tree
+            self.summary_progress_label = progress_label
+            self.summary_progress_bar = progress_bar
+            self.summary_refresh_button = refresh_button
+            self.summary_selected_title_label = selected_title_label
+            self.summary_search_var = search_var
+            self.summary_quality_var = quality_var
+            self.summary_add_cart_btn = add_cart_btn
+            self.summary_subtitle_btn = subtitle_btn
         elif content_type_filter == "PRESS":
             self.press_conference_tree = tree
             self.press_conference_progress_label = progress_label
@@ -371,6 +394,21 @@ class SeminarGUI:
     
     def _create_downloader_tab(self, parent):
         self._create_content_list_tab(parent, "FULL")
+
+    def _create_summary_tab(self, parent):
+        self._create_content_list_tab(parent, "SUMMARY")
+        # 일괄 자막 다운로드 버튼 추가
+        bulk_frame = ttk.Frame(parent)
+        bulk_frame.pack(fill=tk.X, pady=(6, 0))
+        ttk.Separator(bulk_frame, orient='horizontal').pack(fill=tk.X, pady=(0, 6))
+        self.summary_bulk_btn = ttk.Button(
+            bulk_frame,
+            text="요약영상 자막 일괄다운로드",
+            command=self._start_summary_bulk_subtitle_download
+        )
+        self.summary_bulk_btn.pack(side=tk.LEFT)
+        self.summary_bulk_label = ttk.Label(bulk_frame, text="", style='Muted.TLabel')
+        self.summary_bulk_label.pack(side=tk.LEFT, padx=(10, 0))
 
     def _create_press_conference_tab(self, parent):
         self._create_content_list_tab(parent, "PRESS")
@@ -515,14 +553,18 @@ class SeminarGUI:
         # 최신순 정렬
         self.seminars_full.sort(key=lambda x: x.get('date', ''), reverse=True)
         self.seminars_press.sort(key=lambda x: x.get('date', ''), reverse=True)
+        self.seminars_summary.sort(key=lambda x: x.get('date', ''), reverse=True)
 
-        # Clear existing items from both trees
+        # Clear existing items from all trees
         if hasattr(self, 'downloader_tree'):
             for i in self.downloader_tree.get_children():
                 self.downloader_tree.delete(i)
         if hasattr(self, 'press_conference_tree'):
             for i in self.press_conference_tree.get_children():
                 self.press_conference_tree.delete(i)
+        if hasattr(self, 'summary_tree'):
+            for i in self.summary_tree.get_children():
+                self.summary_tree.delete(i)
 
         # Populate Downloader Tab
         downloader_inserted_count = 0
@@ -535,6 +577,17 @@ class SeminarGUI:
             downloader_inserted_count += 1
         logging.debug(f"Populated downloader_tree with {downloader_inserted_count} items.")
 
+        # Populate Summary Tab
+        summary_inserted_count = 0
+        for item in self.seminars_summary:
+            qualities = [v.get('vodRes', '?') for v in item.get('vod_list', [])]
+            duration_sec = item.get('duration', 0)
+            duration_str = self._format_duration(duration_sec)
+            values = (item.get('date', 'N/A'), item.get('title', 'N/A'), duration_str, ' | '.join(qualities))
+            self.summary_tree.insert("", "end", values=values, tags=(item.get('id'),))
+            summary_inserted_count += 1
+        logging.debug(f"Populated summary_tree with {summary_inserted_count} items.")
+
         # Populate Press Conference Tab
         press_inserted_count = 0
         for pc in self.seminars_press:
@@ -546,7 +599,7 @@ class SeminarGUI:
             press_inserted_count += 1
         logging.debug(f"Populated press_conference_tree with {press_inserted_count} items.")
 
-        self.update_status(f"총 세미나 {downloader_inserted_count}개, 기자회견 {press_inserted_count}개를 불러왔습니다.")
+        self.update_status(f"총 세미나 {downloader_inserted_count}개, 요약영상 {summary_inserted_count}개, 기자회견 {press_inserted_count}개를 불러왔습니다.")
         logging.debug("_populate_tree_for_tabs finished.")
 
     def _apply_search_filter(self, content_type_filter):
@@ -555,6 +608,10 @@ class SeminarGUI:
             tree = self.downloader_tree
             data_list = self.seminars_full
             query = self.downloader_search_var.get().strip().lower()
+        elif content_type_filter == "SUMMARY":
+            tree = self.summary_tree
+            data_list = self.seminars_summary
+            query = self.summary_search_var.get().strip().lower()
         elif content_type_filter == "PRESS":
             tree = self.press_conference_tree
             data_list = self.seminars_press
@@ -588,6 +645,11 @@ class SeminarGUI:
             current_selected_title_label = self.downloader_selected_title_label
             add_cart_btn = self.full_add_cart_btn
             subtitle_btn = self.full_subtitle_btn
+        elif content_type_filter == "SUMMARY":
+            current_tree = self.summary_tree
+            current_selected_title_label = self.summary_selected_title_label
+            add_cart_btn = self.summary_add_cart_btn
+            subtitle_btn = self.summary_subtitle_btn
         elif content_type_filter in ("PRESS", "PRESSCONF"):
             content_type_filter = "PRESS"
             current_tree = self.press_conference_tree
@@ -602,6 +664,8 @@ class SeminarGUI:
             current_selected_title_label.config(text="선택: 없음")
             if content_type_filter == "FULL":
                 self.full_current_item = None
+            elif content_type_filter == "SUMMARY":
+                self.summary_current_item = None
             else:
                 self.press_current_item = None
             add_cart_btn.config(state=tk.DISABLED)
@@ -617,6 +681,8 @@ class SeminarGUI:
 
         if content_type_filter == "FULL":
             self.full_current_item = content_item
+        elif content_type_filter == "SUMMARY":
+            self.summary_current_item = content_item
         else:
             self.press_current_item = content_item
 
@@ -672,26 +738,34 @@ class SeminarGUI:
         if os.path.exists(JSON_FILE):
             try:
                 with open(JSON_FILE, 'r', encoding='utf-8') as f:
-                    combined_seminars = json.load(f) # Changed to combined_seminars
-                    # content_type = item.get('content_type', 'FULL') # Assign 'FULL' as default for legacy items # THIS LINE WAS CAUSING THE ERROR
-                    for item in combined_seminars: # Loop through combined
-                        content_type = item.get('content_type', 'FULL') # Assign 'FULL' as default for legacy items
+                    combined_seminars = json.load(f)
+                    for item in combined_seminars:
+                        content_type = item.get('content_type', 'FULL')
                         if content_type == "FULL":
                             self.seminars_full.append(item)
                         elif content_type in ("PRESS", "PRESSCONF"):
                             self.seminars_press.append(item)
                         self.seminars_by_id[item['id']] = item
-
-                self._populate_tree_for_tabs() # Updated call
-                self.update_status(f"저장된 세미나 {len(self.seminars_full)}개, 기자회견 {len(self.seminars_press)}개를 불러왔습니다.")
                 logging.debug(f"Loaded {len(self.seminars_full)} seminars and {len(self.seminars_press)} press conferences from local file.")
             except (json.JSONDecodeError, IOError) as e:
                 self.update_status(f"로컬 파일 로드 오류: {e}")
                 logging.error(f"Local file load error: {e}")
                 messagebox.showerror("오류", f"저장된 세미나 파일({JSON_FILE})을 읽는 데 실패했습니다.")
-        else:
-            self.update_status("저장된 세미나 목록이 없습니다. '새로고침'을 눌러주세요.")
-            logging.debug("No local seminar list found.")
+
+        if os.path.exists(SUMMARY_JSON_FILE):
+            try:
+                with open(SUMMARY_JSON_FILE, 'r', encoding='utf-8') as f:
+                    summary_list = json.load(f)
+                    for item in summary_list:
+                        self.seminars_summary.append(item)
+                        self.seminars_by_id[item['id']] = item
+                logging.debug(f"Loaded {len(self.seminars_summary)} summary videos from local file.")
+            except (json.JSONDecodeError, IOError) as e:
+                logging.error(f"Summary file load error: {e}")
+
+        if not self.seminars_full and not self.seminars_press and not self.seminars_summary:
+            self.update_status("저장된 목록이 없습니다. '새로고침'을 눌러주세요.")
+        self._populate_tree_for_tabs()
         logging.debug("load_local_seminars finished.")
 
     def start_fetch_thread(self):
@@ -710,6 +784,7 @@ class SeminarGUI:
         logging.debug("_fetch_seminar_data started (parallel fetch).")
         self.seminars_full = []
         self.seminars_press = []
+        self.seminars_summary = []
         self.seminars_by_id = {}
 
         results = {}
@@ -720,6 +795,7 @@ class SeminarGUI:
         threads = [
             threading.Thread(target=fetch_one, args=('FULL',), daemon=True),
             threading.Thread(target=fetch_one, args=('PRESSCONF',), daemon=True),
+            threading.Thread(target=fetch_one, args=('SUMMARY',), daemon=True),
         ]
         for t in threads:
             t.start()
@@ -728,20 +804,23 @@ class SeminarGUI:
 
         self.seminars_full = results.get('FULL', [])
         self.seminars_press = results.get('PRESSCONF', [])
-        for item in self.seminars_full + self.seminars_press:
+        self.seminars_summary = results.get('SUMMARY', [])
+        for item in self.seminars_full + self.seminars_press + self.seminars_summary:
             self.seminars_by_id[item['id']] = item
 
-        total = len(self.seminars_full) + len(self.seminars_press)
+        total = len(self.seminars_full) + len(self.seminars_press) + len(self.seminars_summary)
         try:
             combined_seminars = self.seminars_full + self.seminars_press
             with open(JSON_FILE, 'w', encoding='utf-8') as f:
                 json.dump(combined_seminars, f, ensure_ascii=False, indent=2)
+            with open(SUMMARY_JSON_FILE, 'w', encoding='utf-8') as f:
+                json.dump(self.seminars_summary, f, ensure_ascii=False, indent=2)
             self.update_status(f"완료! 총 {total}개 항목을 찾아 저장했습니다.")
-            logging.debug(f"Saved {total} items to {JSON_FILE}")
+            logging.debug(f"Saved {total} items (summary: {len(self.seminars_summary)})")
         except IOError as e:
             self.update_status(f"파일 저장 오류: {e}")
             logging.error(f"File save error: {e}", exc_info=True)
-            self.master.after(0, messagebox.showerror, "오류", f"결과를 파일({JSON_FILE})에 저장하는데 실패했습니다.")
+            self.master.after(0, messagebox.showerror, "오류", f"결과를 파일에 저장하는데 실패했습니다.")
 
         self.master.after(0, self._populate_tree_for_tabs)
         self.master.after(0, self.downloader_refresh_button.config, {'state': tk.NORMAL})
@@ -750,7 +829,7 @@ class SeminarGUI:
     def _fetch_one_content_type(self, content_type):
         """날짜 범위 적응형 방식으로 전체 목록을 가져옵니다.
         서버가 page 파라미터를 무시하므로 startDt/endDt 필터로 분할 수집합니다."""
-        label = "세미나" if content_type == "FULL" else "기자회견"
+        label = {"FULL": "세미나", "SUMMARY": "요약영상", "PRESSCONF": "기자회견"}.get(content_type, content_type)
         all_items = []
         unique_ids = set()
         today = datetime.today()
@@ -862,7 +941,13 @@ class SeminarGUI:
 
     def _download_video(self, url, seminar):
         logging.debug(f"_download_video started for seminar ID: {seminar.get('id')}, url: {url}")
-        progress_bar = self.downloader_progress_bar if seminar.get('content_type') == 'FULL' else self.press_conference_progress_bar
+        ct = seminar.get('content_type', 'FULL')
+        if ct == 'FULL':
+            progress_bar = self.downloader_progress_bar
+        elif ct == 'SUMMARY':
+            progress_bar = self.summary_progress_bar
+        else:
+            progress_bar = self.press_conference_progress_bar
         self.master.after(0, lambda ct=seminar['content_type']: self.on_content_select(event=None, content_type_filter=ct))
 
         title = self._sanitize_filename(seminar['title'])
@@ -1124,6 +1209,88 @@ class SeminarGUI:
             self.master.after(0, lambda ct=seminar_data['content_type']: self.on_content_select(event=None, content_type_filter=ct))
         logging.debug("_download_ai_subtitle_only finished.")
 
+    def _start_summary_bulk_subtitle_download(self):
+        if self.summary_bulk_subtitle_thread and self.summary_bulk_subtitle_thread.is_alive():
+            messagebox.showwarning("진행 중", "이미 일괄 다운로드 중입니다.")
+            return
+        if not self.seminars_summary:
+            messagebox.showinfo("목록 없음", "요약영상 목록을 먼저 새로고침 해주세요.")
+            return
+        if not messagebox.askyesno("일괄 자막 다운로드",
+                                   f"요약영상 {len(self.seminars_summary)}개의 자막을 일괄 다운로드합니다.\n계속하시겠습니까?"):
+            return
+        self.summary_bulk_subtitle_thread = threading.Thread(
+            target=self._summary_bulk_subtitle_worker, daemon=True)
+        self.summary_bulk_subtitle_thread.start()
+
+    def _summary_bulk_subtitle_worker(self):
+        items = list(self.seminars_summary)
+        total = len(items)
+        self.master.after(0, self.summary_bulk_btn.config, {'state': tk.DISABLED})
+        self.master.after(0, self.summary_progress_bar.config, {'mode': 'determinate', 'maximum': total, 'value': 0})
+
+        try:
+            extractor = SeleniumSubtitleExtractor(
+                download_dir=DOWNLOAD_DIR,
+                user_agent=self.selenium_user_agent.get() if self.selenium_user_agent.get() else None,
+                headless=self.selenium_headless_mode.get(),
+                driver_path=self.selenium_driver_path.get() if self.selenium_driver_path.get() else None
+            )
+        except Exception as e:
+            self.update_status(f"Selenium 초기화 실패: {e}")
+            self.master.after(0, self.summary_bulk_btn.config, {'state': tk.NORMAL})
+            return
+
+        success_count = 0
+        skip_count = 0
+        fail_count = 0
+
+        for idx, item in enumerate(items):
+            cid = item.get('id')
+            title = self._sanitize_filename(item['title'])
+            base_filename = os.path.join(DOWNLOAD_DIR, f"{self._date_prefix(item)}{title}")
+            txt_path = f"{base_filename}.txt"
+
+            self.master.after(0, self.summary_progress_bar.config, {'value': idx})
+            self.master.after(0, self.summary_bulk_label.config,
+                              {'text': f"[{idx+1}/{total}] {item['title'][:30]}..."})
+
+            if os.path.exists(txt_path):
+                self.update_status(f"[{idx+1}/{total}] 건너뜀(이미 존재): {title}")
+                skip_count += 1
+                continue
+
+            self.update_status(f"[{idx+1}/{total}] 자막 다운로드 중: {title}")
+            try:
+                cont_id = extractor.get_cont_id_from_cid(cid, item.get('sid', ''))
+                if not cont_id:
+                    logging.warning(f"[bulk] ContId 없음: cid={cid}")
+                    fail_count += 1
+                    continue
+                subtitle_filepath = extractor.download_subtitle(cont_id, title)
+                if subtitle_filepath:
+                    if subtitle_filepath.lower().endswith(".smi"):
+                        plain_text = self.extract_text_from_smi(subtitle_filepath)
+                        if plain_text:
+                            with open(txt_path, 'w', encoding='utf-8') as f:
+                                f.write(plain_text)
+                    success_count += 1
+                else:
+                    fail_count += 1
+            except Exception as e:
+                logging.error(f"[bulk] 자막 오류 cid={cid}: {e}", exc_info=True)
+                fail_count += 1
+
+        self.master.after(0, self.summary_progress_bar.config, {'value': total})
+        self.master.after(0, self.summary_bulk_label.config, {'text': ""})
+        self.master.after(0, self.summary_bulk_btn.config, {'state': tk.NORMAL})
+        self.update_status(
+            f"일괄 자막 완료 — 성공: {success_count}, 건너뜀: {skip_count}, 실패: {fail_count} / 총 {total}개"
+        )
+        self.master.after(0, messagebox.showinfo, "완료",
+                          f"요약영상 자막 일괄 다운로드 완료\n성공: {success_count}  건너뜀: {skip_count}  실패: {fail_count}")
+        logging.debug("_summary_bulk_subtitle_worker finished.")
+
     def start_download_subtitle_selenium_thread(self, seminar_data):
         logging.debug(f"start_download_subtitle_selenium_thread called for seminar ID: {seminar_data.get('id')}")
         if self.download_thread and self.download_thread.is_alive():
@@ -1152,7 +1319,13 @@ class SeminarGUI:
             return
 
         self.update_status(f"Selenium으로 자막 검색 중: {title}...")
-        progress_bar = self.downloader_progress_bar if seminar_data.get('content_type') == 'FULL' else self.press_conference_progress_bar
+        _ct = seminar_data.get('content_type', 'FULL')
+        if _ct == 'FULL':
+            progress_bar = self.downloader_progress_bar
+        elif _ct == 'SUMMARY':
+            progress_bar = self.summary_progress_bar
+        else:
+            progress_bar = self.press_conference_progress_bar
         self.master.after(0, progress_bar.config, {'mode': 'indeterminate'})
         self.master.after(0, progress_bar.start)
 
@@ -1607,6 +1780,9 @@ class SeminarGUI:
         if content_type_filter == "FULL":
             item = self.full_current_item
             quality_name = self.full_quality_var.get()
+        elif content_type_filter == "SUMMARY":
+            item = self.summary_current_item
+            quality_name = self.summary_quality_var.get()
         else:
             item = self.press_current_item
             quality_name = self.press_quality_var.get()
