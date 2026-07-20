@@ -87,9 +87,10 @@ _COMM_DIR_KEYWORDS = [
 
 # --- Setup Logging ---
 LOG_FILE = os.path.join(DOWNLOAD_DIR, "seminar_downloader.log")
-logging.basicConfig(filename=LOG_FILE, level=logging.DEBUG, 
-                    format='%(asctime)s - %(levelname)s - %(message)s',
-                    filemode='w') # Added filemode='w' to overwrite log each run
+_log_handler = logging.FileHandler(LOG_FILE, mode='w', encoding='utf-8')
+_log_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+logging.getLogger().setLevel(logging.DEBUG)
+logging.getLogger().addHandler(_log_handler)
 
 class SeminarGUI:
     def __init__(self, master):
@@ -125,10 +126,15 @@ class SeminarGUI:
         self.selenium_extractor = None # Will be initialized when needed
 
         # --- STT 서버 설정 ---
-        self.stt_host     = tk.StringVar(value="")
-        self.stt_user     = tk.StringVar(value="")
-        self.stt_password = tk.StringVar(value="")
+        self.stt_host      = tk.StringVar(value="")
+        self.stt_user      = tk.StringVar(value="")
+        self.stt_password  = tk.StringVar(value="")
         self.stt_base_path = tk.StringVar(value="")
+        # 보조 서버 (주 서버를 점프호스트로 터널링)
+        self.stt_host2      = tk.StringVar(value="")
+        self.stt_user2      = tk.StringVar(value="")
+        self.stt_password2  = tk.StringVar(value="")
+        self.stt_base_path2 = tk.StringVar(value="")
         self._load_config()
 
         # --- W3 상임위 탭 상태 ---
@@ -715,6 +721,10 @@ class SeminarGUI:
             self.stt_user.set(cfg.get('stt_user', ''))
             self.stt_password.set(cfg.get('stt_password', ''))
             self.stt_base_path.set(cfg.get('stt_base_path', ''))
+            self.stt_host2.set(cfg.get('stt_host2', ''))
+            self.stt_user2.set(cfg.get('stt_user2', ''))
+            self.stt_password2.set(cfg.get('stt_password2', ''))
+            self.stt_base_path2.set(cfg.get('stt_base_path2', ''))
             logging.debug(f"Config loaded from: {cfg_path}")
         except Exception as e:
             logging.warning(f"Config load failed: {e}")
@@ -722,10 +732,14 @@ class SeminarGUI:
     def _save_config(self):
         try:
             cfg = {
-                'stt_host':      self.stt_host.get(),
-                'stt_user':      self.stt_user.get(),
-                'stt_password':  self.stt_password.get(),
-                'stt_base_path': self.stt_base_path.get(),
+                'stt_host':       self.stt_host.get(),
+                'stt_user':       self.stt_user.get(),
+                'stt_password':   self.stt_password.get(),
+                'stt_base_path':  self.stt_base_path.get(),
+                'stt_host2':      self.stt_host2.get(),
+                'stt_user2':      self.stt_user2.get(),
+                'stt_password2':  self.stt_password2.get(),
+                'stt_base_path2': self.stt_base_path2.get(),
             }
             with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
                 json.dump(cfg, f, ensure_ascii=False, indent=2)
@@ -939,7 +953,7 @@ class SeminarGUI:
         self.download_thread.start()
         logging.debug("Download thread started.")
 
-    def _download_video(self, url, seminar):
+    def _download_video(self, url, seminar, subtitle_only=False):
         logging.debug(f"_download_video started for seminar ID: {seminar.get('id')}, url: {url}")
         ct = seminar.get('content_type', 'FULL')
         if ct == 'FULL':
@@ -977,6 +991,12 @@ class SeminarGUI:
             self.master.after(0, lambda ct=seminar['content_type']: self.on_content_select(event=None, content_type_filter=ct))
             return
 
+        # ── 자막만 모드: 영상 다운로드 건너뜀 ──
+        if subtitle_only:
+            self._download_subtitle_only(subtitle_url, ai_cc_id, base_filename, title)
+            self.master.after(0, lambda ct=seminar['content_type']: self.on_content_select(event=None, content_type_filter=ct))
+            return
+
         if os.path.exists(video_filename):
             self.update_status(f"이미 존재함: {os.path.basename(video_filename)}")
             self.master.after(0, lambda ct=seminar['content_type']: self.on_content_select(event=None, content_type_filter=ct))
@@ -1003,7 +1023,7 @@ class SeminarGUI:
                 extra_kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
 
             process = subprocess.run(cmd, check=True, capture_output=True, text=True, encoding='utf-8', **extra_kwargs)
-            
+
             self.master.after(0, progress_bar.stop)
             self.master.after(0, progress_bar.config, {'mode': 'determinate', 'value': 0})
 
@@ -1012,37 +1032,8 @@ class SeminarGUI:
                 self.update_status(f"비디오 다운로드 완료: {os.path.basename(video_filename)} ({size:.1f}MB)")
                 logging.debug(f"Video download complete: {video_filename} ({size:.1f}MB)")
 
-                # 자막 다운로드: smi/vtt URL 우선, 없으면 aiCC API
-                if subtitle_url:
-                    self.update_status(f"자막 다운로드 중: {os.path.basename(base_filename)}.smi...")
-                    subtitle_extension = ".smi" if "smi" in subtitle_url.lower() else (".vtt" if "vtt" in subtitle_url.lower() else ".txt")
-                    subtitle_filename = f"{base_filename}{subtitle_extension}"
-                    try:
-                        subtitle_response = requests.get(subtitle_url, headers=self.headers, timeout=10)
-                        subtitle_response.raise_for_status()
-                        with open(subtitle_filename, 'wb') as f:
-                            f.write(subtitle_response.content)
-                        self.update_status(f"자막 다운로드 완료: {os.path.basename(subtitle_filename)}")
-                        logging.debug(f"Subtitle download complete: {subtitle_filename}")
-                    except requests.exceptions.RequestException as se:
-                        self.master.after(0, self.update_status, f"자막 다운로드 실패: {os.path.basename(subtitle_filename)}. 오류: {se.response.status_code if se.response else se}")
-                        logging.error(f"Subtitle download failed for {subtitle_url}: {se}", exc_info=True)
-                        self.master.after(0, messagebox.showerror, "자막 다운로드 오류", f"자막 다운로드 중 오류가 발생했습니다:\n{se}")
-                    except Exception as se:
-                        self.master.after(0, self.update_status, f"자막 다운로드 중 예외 발생: {os.path.basename(subtitle_filename)}. 오류: {se}")
-                        logging.error(f"Exception during subtitle download for {subtitle_url}: {se}", exc_info=True)
-                        self.master.after(0, messagebox.showerror, "자막 다운로드 오류", f"자막 다운로드 중 예기치 않은 오류가 발생했습니다:\n{se}")
-                elif ai_cc_id:
-                    try:
-                        self.update_status(f"AI 자막 다운로드 중: {title}...")
-                        result = self._download_ai_subtitle(ai_cc_id, base_filename)
-                        if result:
-                            self.update_status(f"AI 자막 완료: {os.path.basename(result)}")
-                        else:
-                            self.update_status("자막 없음")
-                    except Exception as se:
-                        logging.warning(f"AI 자막 다운로드 실패 (무시): {se}")
-                        self.update_status("자막 다운로드 실패 (영상은 저장됨)")
+                # 자막 다운로드
+                self._download_subtitle_only(subtitle_url, ai_cc_id, base_filename, title)
 
             else:
                  self.update_status(f"비디오 다운로드 실패: {os.path.basename(video_filename)}")
@@ -1068,6 +1059,35 @@ class SeminarGUI:
             messagebox.showerror("치명적 오류", f"프로그램 실행 중 예기치 않은 오류가 발생했습니다. 자세한 내용은 {LOG_FILE} 파일을 확인해주세요.\n\n오류: {e}")
         self.master.after(0, lambda ct=seminar['content_type']: self.on_content_select(event=None, content_type_filter=ct))
         logging.debug("_download_video finished.")
+
+    def _download_subtitle_only(self, subtitle_url, ai_cc_id, base_filename, title):
+        """자막 URL 또는 aiCC ID로 자막만 다운로드합니다."""
+        if subtitle_url:
+            ext = ".smi" if "smi" in subtitle_url.lower() else (".vtt" if "vtt" in subtitle_url.lower() else ".txt")
+            subtitle_filename = f"{base_filename}{ext}"
+            try:
+                self.update_status(f"자막 다운로드 중: {os.path.basename(subtitle_filename)}...")
+                r = requests.get(subtitle_url, headers=self.headers, timeout=10)
+                r.raise_for_status()
+                with open(subtitle_filename, 'wb') as f:
+                    f.write(r.content)
+                self.update_status(f"자막 완료: {os.path.basename(subtitle_filename)}")
+            except Exception as e:
+                self.update_status(f"자막 다운로드 실패: {e}")
+                logging.error(f"Subtitle download failed {subtitle_url}: {e}", exc_info=True)
+        elif ai_cc_id:
+            try:
+                self.update_status(f"AI 자막 다운로드 중: {title}...")
+                result = self._download_ai_subtitle(ai_cc_id, base_filename)
+                if result:
+                    self.update_status(f"AI 자막 완료: {os.path.basename(result)}")
+                else:
+                    self.update_status("자막 없음")
+            except Exception as e:
+                logging.warning(f"AI 자막 다운로드 실패 (무시): {e}")
+                self.update_status("자막 없음")
+        else:
+            self.update_status(f"자막 없음: {title}")
 
     # ──────────────────────────────────────────────────────────────
     # PRESSCONF 전용: contentInfo / AI 자막
@@ -1778,27 +1798,38 @@ class SeminarGUI:
     def _add_content_to_cart(self, content_type_filter):
         import uuid
         if content_type_filter == "FULL":
-            item = self.full_current_item
+            tree = self.downloader_tree
             quality_name = self.full_quality_var.get()
         elif content_type_filter == "SUMMARY":
-            item = self.summary_current_item
+            tree = self.summary_tree
             quality_name = self.summary_quality_var.get()
         else:
-            item = self.press_current_item
+            tree = self.press_conference_tree
             quality_name = self.press_quality_var.get()
-        if not item:
+
+        selected = tree.selection()
+        if not selected:
             return
+
         quality_key = {'고화질': 'videoFile1', '중화질': 'videoFile2', '저화질': 'videoFile3'}.get(quality_name, 'videoFile1')
-        cart_item = {
-            'id': str(uuid.uuid4()),
-            'type': 'VPLATFORM',
-            'display': f"{item.get('date', '')[:10]}  {item.get('title', '')}  [{quality_name}]",
-            'content_item': item,
-            'quality_key': quality_key,
-            'quality_name': quality_name,
-        }
-        self.download_cart.append(cart_item)
-        self.cart_listbox.insert(tk.END, cart_item['display'])
+        added = 0
+        for sel in selected:
+            item_id_str = tree.item(sel, 'tags')[0]
+            item = self.seminars_by_id.get(item_id_str)
+            if not item:
+                continue
+            cart_item = {
+                'id': str(uuid.uuid4()),
+                'type': 'VPLATFORM',
+                'display': f"{item.get('date', '')[:10]}  {item.get('title', '')}  [{quality_name}]",
+                'content_item': item,
+                'quality_key': quality_key,
+                'quality_name': quality_name,
+            }
+            self.download_cart.append(cart_item)
+            self.cart_listbox.insert(tk.END, cart_item['display'])
+            added += 1
+        self.update_status(f"장바구니에 {added}개 추가됨")
         self.update_status(f"장바구니 추가: {item.get('title', '')} [{quality_name}]")
 
     def _remove_selected_from_cart(self):
@@ -1818,24 +1849,39 @@ class SeminarGUI:
             messagebox.showwarning("진행 중", "이미 다운로드 중입니다.")
             return
         items = list(self.download_cart)
+        mode  = self.cart_mode_var.get()  # 'all' | 'video' | 'subtitle'
         self.cart_download_thread = threading.Thread(
-            target=self._cart_download_worker, args=(items,), daemon=True)
+            target=self._cart_download_worker, args=(items, mode), daemon=True)
         self.cart_download_thread.start()
 
-    def _cart_download_worker(self, items):
+    def _cart_download_worker(self, items, mode='all'):
         total = len(items)
         self.master.after(0, self.cart_download_btn.config, {'state': tk.DISABLED})
         self.master.after(0, self.cart_clear_btn.config, {'state': tk.DISABLED})
+
+        do_video    = mode in ('all', 'video')
+        do_subtitle = mode in ('all', 'subtitle')
+        has_stt     = bool(self.stt_password.get())
 
         for i, cart_item in enumerate(items):
             self.master.after(0, self.cart_progress_bar.config,
                               {'value': int(i / total * 100)})
             try:
                 if cart_item['type'] == 'VPLATFORM':
-                    self._download_video(cart_item['quality_key'], cart_item['content_item'])
+                    if do_video:
+                        self._download_video(cart_item['quality_key'], cart_item['content_item'])
+                        if do_subtitle:
+                            pass  # _download_video가 자막도 함께 처리함
+                    elif do_subtitle:
+                        self._download_video(cart_item['quality_key'], cart_item['content_item'],
+                                             subtitle_only=True)
                 elif cart_item['type'] == 'W3':
-                    self._w3_download_videos(
-                        cart_item['conf'], [cart_item['clip']], cart_item['quality_name'])
+                    if do_video:
+                        self._w3_download_videos(
+                            cart_item['conf'], [cart_item['clip']], cart_item['quality_name'])
+                    if do_subtitle and has_stt:
+                        self._w3_download_subtitles(
+                            cart_item['conf'], [cart_item['clip']], fmt='txt')
             except Exception as e:
                 logging.error(f"장바구니 다운로드 오류: {e}", exc_info=True)
             self.master.after(0, self._remove_cart_item_by_id, cart_item['id'])
@@ -1872,7 +1918,14 @@ class SeminarGUI:
                    command=self._remove_selected_from_cart).pack(side=tk.LEFT, padx=(0, 4))
         self.cart_clear_btn = ttk.Button(btn_row, text="전체 비우기",
                                          command=self._clear_cart)
-        self.cart_clear_btn.pack(side=tk.LEFT)
+        self.cart_clear_btn.pack(side=tk.LEFT, padx=(0, 16))
+
+        ttk.Label(btn_row, text="다운로드:").pack(side=tk.LEFT)
+        self.cart_mode_var = tk.StringVar(value='all')
+        for label, val in [("영상+자막", "all"), ("영상만", "video"), ("자막만", "subtitle")]:
+            ttk.Radiobutton(btn_row, text=label, variable=self.cart_mode_var,
+                            value=val).pack(side=tk.LEFT, padx=(4, 0))
+
         self.cart_download_btn = ttk.Button(btn_row, text="▶ 다운로드 시작",
                                             command=self._start_cart_download)
         self.cart_download_btn.pack(side=tk.RIGHT)
@@ -2036,66 +2089,101 @@ class SeminarGUI:
             self.master.after(0, self.w3_progress_bar.stop)
             return
 
+        ssh2  = None
+        sftp2 = None
+
         try:
-            # 날짜 디렉토리 탐색 (YYYYMMDD 또는 YYYY-MM-DD)
             d_dash = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
-            base_path = None
-            for candidate in [date_str, d_dash]:
-                try:
-                    p = f"{self.stt_base_path.get()}/{candidate}"
-                    sftp.listdir(p)
-                    base_path = p
-                    break
-                except FileNotFoundError:
-                    continue
 
-            if base_path is None:
-                self.update_status(f"서버 경로 없음: {date_str}")
-                return
-
-            # 위원회명으로 서버 디렉토리 매칭
-            mc        = conf.get('mc', '')
-            comm_name = self.w3_committee_map.get(mc, '') or conf.get('confTitle', '')
-            available_dirs = sftp.listdir(base_path)
-            matched = self._match_committee_dirs(comm_name, available_dirs)
-            if matched:
-                subdirs = matched
-                self.update_status(f"위원회 디렉토리: {matched} → 자막 수집 중...")
-            else:
-                subdirs = available_dirs
-                logging.warning(f"위원회 디렉토리 매칭 실패({comm_name}), 전체 스캔")
-
-            # 해당 서브디렉토리의 .txt.done 파일에서 transcript 수집
-            all_segments = []
-            for subdir in subdirs:
-                dir_path = f"{base_path}/{subdir}"
-                try:
-                    files = [f for f in sftp.listdir(dir_path) if f.endswith('.txt.done')]
-                except Exception:
-                    continue
-                for fname in files:
-                    fpath = f"{dir_path}/{fname}"
+            def _find_base_full(sftp_conn, base_root):
+                for candidate in [date_str, d_dash]:
                     try:
-                        with sftp.open(fpath, 'rb') as fh:
-                            raw = fh.read()
-                        for line in raw.decode('utf-8', errors='ignore').split('\n'):
-                            line = line.strip()
-                            if not line or line == 'HW':
-                                continue
-                            try:
-                                item = json.loads(line)
-                            except json.JSONDecodeError:
-                                continue
-                            if item.get('transcript', '').strip():
-                                all_segments.append(item)
-                    except Exception as e:
-                        logging.debug(f"STT file read error {fpath}: {e}")
+                        p = f"{base_root}/{candidate}"
+                        sftp_conn.listdir(p)
+                        return p
+                    except FileNotFoundError:
+                        continue
+                return None
+
+            def _collect_segments(sftp_conn, base_path):
+                mc        = conf.get('mc', '')
+                comm_name = self.w3_committee_map.get(mc, '') or conf.get('confTitle', '')
+                available_dirs = sftp_conn.listdir(base_path)
+                matched = self._match_committee_dirs(comm_name, available_dirs)
+                if matched:
+                    subdirs = matched
+                    self.update_status(f"위원회 디렉토리: {matched} → 자막 수집 중...")
+                else:
+                    subdirs = available_dirs
+                    logging.warning(f"위원회 디렉토리 매칭 실패({comm_name}), 전체 스캔")
+
+                segs = []
+                for subdir in subdirs:
+                    dir_path = f"{base_path}/{subdir}"
+                    try:
+                        all_files = sftp_conn.listdir(dir_path)
+                        files = [f for f in all_files if f.endswith('.txt.done')]
+                    except Exception:
+                        continue
+                    for fname in files:
+                        fpath = f"{dir_path}/{fname}"
+                        try:
+                            with sftp_conn.open(fpath, 'rb') as fh:
+                                raw = fh.read()
+                            for line in raw.decode('utf-8', errors='ignore').split('\n'):
+                                line = line.strip()
+                                if not line or line == 'HW':
+                                    continue
+                                try:
+                                    item = json.loads(line)
+                                except json.JSONDecodeError:
+                                    continue
+                                if item.get('transcript', '').strip():
+                                    segs.append(item)
+                        except Exception as e:
+                            logging.debug(f"STT file read error {fpath}: {e}")
+                return segs
+
+            # 1) 주 서버에서 시도
+            all_segments = []
+            base_path = _find_base_full(sftp, self.stt_base_path.get())
+            if base_path:
+                all_segments = _collect_segments(sftp, base_path)
+            else:
+                logging.warning(f"[STT 전체] 주 서버에서 날짜 디렉토리 없음: {date_str}")
+
+            # 2) 주 서버에서 못 찾으면 보조 서버 (터널링)
+            if not all_segments and self.stt_host2.get():
+                self.update_status("[STT] 보조 서버 연결 중...")
+                try:
+                    channel = ssh.get_transport().open_channel(
+                        'direct-tcpip',
+                        (self.stt_host2.get(), 22),
+                        ('127.0.0.1', 0),
+                    )
+                    ssh2 = paramiko.SSHClient()
+                    ssh2.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                    ssh2.connect(
+                        self.stt_host2.get(), sock=channel,
+                        username=self.stt_user2.get(),
+                        password=self.stt_password2.get(),
+                        timeout=15,
+                    )
+                    sftp2 = ssh2.open_sftp()
+                    base_root2 = self.stt_base_path2.get() or self.stt_base_path.get()
+                    base_path2 = _find_base_full(sftp2, base_root2)
+                    if base_path2:
+                        all_segments = _collect_segments(sftp2, base_path2)
+                    else:
+                        logging.warning(f"[STT 전체] 보조 서버에서도 날짜 디렉토리 없음: {date_str}")
+                except Exception as e:
+                    logging.warning(f"[STT 전체] 보조 서버 연결 실패: {e}")
+                    self.update_status(f"보조 서버 연결 실패: {e}")
 
             if not all_segments:
                 self.update_status(f"자막 없음: {conf_title}")
                 return
 
-            # recv-timestamp 순으로 정렬
             all_segments.sort(key=lambda x: self._parse_recv_ts(x.get('recv-timestamp', '')))
 
             content = self._stt_segments_to_txt(all_segments)
@@ -2110,14 +2198,11 @@ class SeminarGUI:
             logging.error(f"Full STT subtitle error: {e}", exc_info=True)
             self.update_status(f"오류: {e}")
         finally:
-            try:
-                sftp.close()
-            except Exception:
-                pass
-            try:
-                ssh.close()
-            except Exception:
-                pass
+            for obj in [sftp2, ssh2, sftp, ssh]:
+                try:
+                    obj.close()
+                except Exception:
+                    pass
             self.master.after(0, self.w3_progress_bar.stop)
             self.master.after(0, self.w3_progress_bar.config,
                               {'mode': 'determinate', 'value': 0})
@@ -2150,9 +2235,9 @@ class SeminarGUI:
                 play_time = clip.get('playTime', '')
                 logging.debug(f"[STT] clip={clip_title} realTime={real_time!r} playTime={play_time!r} keys={list(clip.keys())}")
 
-                if play_time:
+                if True:  # playTime 유무와 관계없이 시도 (realTime 기본값이면 전체 반환 모드)
                     self.update_status(f"STT 서버 자막 수집 중: {clip_title}...")
-                    segments, err = self._fetch_stt_subtitle(conf_date, real_time, play_time, conf)
+                    segments, err = self._fetch_stt_subtitle(conf_date, real_time, play_time or '', conf)
                     if segments:
                         # clip_start_ms 재계산 (SRT 타임스탬프용)
                         rt = real_time.strip()
@@ -2328,6 +2413,10 @@ class SeminarGUI:
             candidates.append(os.path.join(exe_dir, '_internal', ffmpeg_name))
             # macOS .app 번들: Contents/MacOS/ 아래
             candidates.append(os.path.join(exe_dir, '..', 'MacOS', ffmpeg_name))
+            # macOS .app 번들: Contents/Frameworks/ 아래
+            candidates.append(os.path.join(exe_dir, '..', 'Frameworks', ffmpeg_name))
+            # macOS .app 번들: Contents/Resources/ 아래
+            candidates.append(os.path.join(exe_dir, '..', 'Resources', ffmpeg_name))
         else:
             # 개발 환경: 스크립트와 같은 폴더
             script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -2440,10 +2529,18 @@ class SeminarGUI:
             ttk.Label(f, text=label, width=18, anchor=tk.W).pack(side=tk.LEFT)
             ttk.Entry(f, textvariable=var, width=36, show=show).pack(side=tk.LEFT, fill=tk.X, expand=True)
 
+        ttk.Label(frame, text="▶ 주 서버", font=('', 10, 'bold')).pack(anchor=tk.W, pady=(0, 2))
         row("서버 주소:", self.stt_host)
         row("사용자명:", self.stt_user)
         row("비밀번호:", self.stt_password, show='*')
         row("기본 경로:", self.stt_base_path)
+
+        ttk.Separator(frame, orient='horizontal').pack(fill=tk.X, pady=8)
+        ttk.Label(frame, text="▶ 보조 서버 (주 서버 경유 터널)", font=('', 10, 'bold')).pack(anchor=tk.W, pady=(0, 2))
+        row("서버 주소:", self.stt_host2)
+        row("사용자명:", self.stt_user2)
+        row("비밀번호:", self.stt_password2, show='*')
+        row("기본 경로:", self.stt_base_path2)
 
         ttk.Label(frame,
                   text="비밀번호 입력 후 자막 다운로드(SRT/TXT) 버튼이 활성화됩니다.",
@@ -2463,65 +2560,83 @@ class SeminarGUI:
 
             def do_test():
                 lines = []
+                ssh = sftp = ssh2 = sftp2 = None
                 try:
                     import paramiko
+
+                    def _test_scan(sftp_conn, base, label):
+                        d8 = date_input
+                        d_dash = f"{d8[:4]}-{d8[4:6]}-{d8[6:]}"
+                        found = None
+                        for candidate in [d8, d_dash]:
+                            try:
+                                p = f"{base}/{candidate}"
+                                sftp_conn.listdir(p)
+                                found = p
+                                break
+                            except FileNotFoundError:
+                                lines.append(f"[없음] {p}\n")
+                        if found is None:
+                            return
+                        lines.append(f"[OK] {label} 경로: {found}\n")
+                        dirs = sftp_conn.listdir(found)
+                        lines.append(f"디렉토리: {dirs}\n")
+                        for d in dirs:
+                            dp = f"{found}/{d}"
+                            try:
+                                files = sftp_conn.listdir(dp)
+                                done_files = [f for f in files if f.endswith('.txt.done')]
+                                lines.append(f"\n[{d}] 파일 {len(done_files)}개: {done_files}")
+                                for fname in done_files:
+                                    fp = f"{dp}/{fname}"
+                                    with sftp_conn.open(fp, 'rb') as fh:
+                                        head = fh.read(512).decode('utf-8', errors='ignore')
+                                    json_lines = [l.strip() for l in head.split('\n') if l.strip() and l.strip() != 'HW']
+                                    try:
+                                        ts = json.loads(json_lines[0]).get('recv-timestamp', '?') if json_lines else '?'
+                                        lines.append(f"  첫 recv-timestamp: {ts}")
+                                    except Exception:
+                                        lines.append(f"  첫 줄 파싱 실패")
+                            except Exception as e:
+                                lines.append(f"\n[{d}] 접근 오류: {e}")
+
+                    # 주 서버
                     ssh = paramiko.SSHClient()
                     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
                     ssh.connect(self.stt_host.get(), port=22,
                                 username=self.stt_user.get(),
                                 password=self.stt_password.get(), timeout=10)
                     sftp = ssh.open_sftp()
-                    lines.append(f"[OK] SFTP 연결 성공\n")
+                    lines.append(f"[OK] 주 서버 연결 성공\n")
+                    lines.append(f"\n=== 주 서버 ({self.stt_host.get()}) ===\n")
+                    _test_scan(sftp, self.stt_base_path.get(), "주 서버")
 
-                    # 날짜 형식 두 가지 모두 시도 (20260407 / 2026-04-07)
-                    d8 = date_input  # 이미 replace('-','') 처리됨
-                    d_dash = f"{d8[:4]}-{d8[4:6]}-{d8[6:]}"
-                    base_path_root = self.stt_base_path.get()
-
-                    base = None
-                    for candidate in [d8, d_dash]:
+                    # 보조 서버 (터널링)
+                    if self.stt_host2.get():
+                        lines.append(f"\n=== 보조 서버 ({self.stt_host2.get()}) [터널] ===\n")
                         try:
-                            p = f"{base_path_root}/{candidate}"
-                            sftp.listdir(p)
-                            base = p
-                            lines.append(f"[OK] 경로: {p}\n")
-                            break
-                        except FileNotFoundError:
-                            lines.append(f"[없음] {p}\n")
-
-                    if base is None:
-                        sftp.close(); ssh.close()
-                        return lines
-
-                    dirs = sftp.listdir(base)
-                    lines.append(f"디렉토리: {dirs}\n")
-
-                    for d in dirs:
-                        dp = f"{base}/{d}"
-                        try:
-                            files = sftp.listdir(dp)
-                            done_files = [f for f in files if f.endswith('.txt.done')]
-                            lines.append(f"\n[{d}] 파일 {len(done_files)}개: {done_files}")
-                            for fname in done_files:
-                                fp = f"{dp}/{fname}"
-                                fstat = sftp.stat(fp)
-                                with sftp.open(fp, 'rb') as fh:
-                                    head = fh.read(512).decode('utf-8', errors='ignore')
-                                json_lines = [l.strip() for l in head.split('\n')
-                                              if l.strip() and l.strip() != 'HW']
-                                try:
-                                    ts = json.loads(json_lines[0]).get('recv-timestamp', '?') if json_lines else '?'
-                                    lines.append(f"  첫 recv-timestamp: {ts}")
-                                except Exception:
-                                    lines.append(f"  첫 줄 파싱 실패")
+                            channel = ssh.get_transport().open_channel(
+                                'direct-tcpip', (self.stt_host2.get(), 22), ('127.0.0.1', 0))
+                            ssh2 = paramiko.SSHClient()
+                            ssh2.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                            ssh2.connect(self.stt_host2.get(), sock=channel,
+                                         username=self.stt_user2.get(),
+                                         password=self.stt_password2.get(), timeout=10)
+                            sftp2 = ssh2.open_sftp()
+                            lines.append(f"[OK] 보조 서버 연결 성공\n")
+                            base_root2 = self.stt_base_path2.get() or self.stt_base_path.get()
+                            _test_scan(sftp2, base_root2, "보조 서버")
                         except Exception as e:
-                            lines.append(f"\n[{d}] 접근 오류: {e}")
+                            lines.append(f"[오류] 보조 서버 연결 실패: {e}\n")
 
-                    sftp.close(); ssh.close()
                 except ImportError:
                     lines.append("[오류] paramiko 미설치 (pip install paramiko)")
                 except Exception as e:
                     lines.append(f"[오류] {e}")
+                finally:
+                    for obj in [sftp2, ssh2, sftp, ssh]:
+                        try: obj.close()
+                        except: pass
                 return lines
 
             def finish(lines):
@@ -2582,16 +2697,20 @@ class SeminarGUI:
         elif len(rt) < 8:
             rt = rt.ljust(8, '0')
 
+        real_time_is_default = rt in ('', '00:00:00', '00:0000', '0:00:00')
+
         # 클립 시작 → Unix ms (KST = UTC+9)
         try:
             dt_kst = datetime.strptime(f"{date_str} {rt}", "%Y%m%d %H:%M:%S")
             epoch = datetime(1970, 1, 1)
             clip_start_ms = int((dt_kst - epoch).total_seconds() * 1000) - 9 * 3600 * 1000
         except ValueError as e:
-            return None, f"시각 파싱 오류: {e}"
+            if not real_time_is_default:
+                return None, f"시각 파싱 오류: {e}"
+            clip_start_ms = 0
 
         # playTime → duration ms
-        parts = play_time_str.split(':')
+        parts = play_time_str.split(':') if play_time_str else []
         try:
             if len(parts) == 3:
                 dur_ms = (int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])) * 1000
@@ -2602,12 +2721,13 @@ class SeminarGUI:
         except ValueError:
             dur_ms = 0
 
-        if dur_ms <= 0:
+        # realTime이 기본값이면 dur_ms 체크 없이 전체 반환 모드로 진행
+        if dur_ms <= 0 and not real_time_is_default:
             return None, "클립 재생 시간 정보 없음"
 
         clip_end_ms = clip_start_ms + dur_ms
 
-        # SFTP 연결
+        # 주 서버 SFTP 연결
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         try:
@@ -2621,130 +2741,185 @@ class SeminarGUI:
         except Exception as e:
             return None, f"SFTP 연결 실패: {e}"
 
+        ssh2  = None
+        sftp2 = None
+
         try:
-            # 날짜 디렉토리 형식 자동 감지 (20260407 또는 2026-04-07)
             d_dash = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
-            base_path = None
-            for candidate in [date_str, d_dash]:
-                try:
-                    p = f"{self.stt_base_path.get()}/{candidate}"
-                    sftp.listdir(p)
-                    base_path = p
-                    break
-                except FileNotFoundError:
-                    continue
-            if base_path is None:
-                return None, f"서버 경로 없음: {date_str} / {d_dash}"
 
-            try:
-                available_dirs = sftp.listdir(base_path)
-            except Exception as e:
-                return None, f"서버 경로 접근 오류: {e}"
-
-            # 위원회 디렉토리 매칭
-            if conf:
-                mc        = conf.get('mc', '')
-                comm_name = self.w3_committee_map.get(mc, '') or conf.get('confTitle', '')
-                matched   = self._match_committee_dirs(comm_name, available_dirs)
-                dirs      = matched if matched else available_dirs
-            else:
-                dirs = available_dirs
-
-            best_segments = None
-
-            for d in dirs:
-                dir_path = f"{base_path}/{d}"
-                try:
-                    files = [f for f in sftp.listdir(dir_path) if f.endswith('.txt.done')]
-                except Exception:
-                    continue
-
-                for fname in files:
-                    fpath = f"{dir_path}/{fname}"
+            def _find_base(sftp_conn, base_root):
+                for candidate in [date_str, d_dash]:
                     try:
-                        # 파일 전체 읽기 (head/tail 분할 방식은 JSON 줄이 잘릴 수 있음)
-                        with sftp.open(fpath, 'rb') as fh:
-                            raw = fh.read()
-                        all_lines = [l.strip() for l in raw.decode('utf-8', errors='ignore').split('\n')
-                                     if l.strip() and l.strip() != 'HW']
-                        if not all_lines:
-                            continue
-
-                        # 첫/마지막 타임스탬프로 pre-filter (파싱 실패 시 필터 건너뜀)
-                        try:
-                            first_ts = self._parse_recv_ts(json.loads(all_lines[0]).get('recv-timestamp', ''))
-                        except Exception:
-                            first_ts = 0
-                        try:
-                            last_ts = self._parse_recv_ts(json.loads(all_lines[-1]).get('recv-timestamp', ''))
-                        except Exception:
-                            last_ts = 0
-                        if first_ts and last_ts and (first_ts > clip_end_ms or last_ts < clip_start_ms):
-                            continue
-
-                        segments = []
-                        for line in all_lines:
-                            try:
-                                item = json.loads(line)
-                            except json.JSONDecodeError:
-                                continue
-                            recv_ts = self._parse_recv_ts(item.get('recv-timestamp', ''))
-                            if recv_ts and clip_start_ms <= recv_ts < clip_end_ms:
-                                segments.append(item)
-
-                        if segments and (best_segments is None or
-                                         len(segments) > len(best_segments)):
-                            best_segments = segments
-                            logging.debug(
-                                f"STT match: {d}/{fname}, {len(segments)} segments")
-
-                    except Exception as e:
-                        logging.debug(f"STT file read error {fpath}: {e}")
+                        p = f"{base_root}/{candidate}"
+                        sftp_conn.listdir(p)
+                        return p
+                    except FileNotFoundError:
                         continue
+                return None
 
-            if best_segments:
-                return best_segments, None
-
-            # 시간 매칭 실패 시 해당 디렉토리 전체 반환 (국정감사 등 타임스탬프 불일치 대응)
-            logging.warning("STT 시간 매칭 실패, 디렉토리 전체 반환 fallback")
-            all_segments = []
-            for d in dirs:
-                dir_path = f"{base_path}/{d}"
+            def _search_in_base(sftp_conn, base_path):
                 try:
-                    files = [f for f in sftp.listdir(dir_path) if f.endswith('.txt.done')]
-                except Exception:
-                    continue
-                for fname in files:
-                    fpath = f"{dir_path}/{fname}"
-                    try:
-                        with sftp.open(fpath, 'rb') as fh:
-                            raw = fh.read()
-                        for line in raw.decode('utf-8', errors='ignore').split('\n'):
-                            line = line.strip()
-                            if not line or line == 'HW':
-                                continue
+                    available_dirs = sftp_conn.listdir(base_path)
+                except Exception as e:
+                    return None, f"서버 경로 접근 오류: {e}"
+
+                self.update_status(f"[STT] 서버 경로: {base_path}, 디렉토리: {available_dirs}")
+                logging.debug(f"[STT] base_path={base_path}, available_dirs={available_dirs}")
+
+                if conf:
+                    mc        = conf.get('mc', '')
+                    comm_name = self.w3_committee_map.get(mc, '') or conf.get('confTitle', '')
+                    matched   = self._match_committee_dirs(comm_name, available_dirs)
+                    dirs      = matched if matched else available_dirs
+                    self.update_status(f"[STT] 위원회={comm_name!r}, 매칭={matched}, 사용={dirs}")
+                    logging.debug(f"[STT] comm_name={comm_name!r}, matched={matched}, dirs={dirs}")
+                else:
+                    dirs = available_dirs
+
+                best_segments = None
+
+                if not real_time_is_default:
+                    for d in dirs:
+                        dir_path = f"{base_path}/{d}"
+                        try:
+                            all_dir_files = sftp_conn.listdir(dir_path)
+                            files = [f for f in all_dir_files if f.endswith('.txt.done')]
+                            self.update_status(f"[STT] {d}: 전체파일={all_dir_files}, 자막파일={files}")
+                            logging.debug(f"[STT] dir={d}, all={all_dir_files}, subtitle_files={files}")
+                        except Exception as e:
+                            logging.debug(f"[STT] listdir 오류 {dir_path}: {e}")
+                            continue
+
+                        for fname in files:
+                            fpath = f"{dir_path}/{fname}"
                             try:
-                                item = json.loads(line)
-                            except json.JSONDecodeError:
+                                with sftp_conn.open(fpath, 'rb') as fh:
+                                    raw = fh.read()
+                                all_lines = [l.strip() for l in raw.decode('utf-8', errors='ignore').split('\n')
+                                             if l.strip() and l.strip() != 'HW']
+                                if not all_lines:
+                                    continue
+
+                                try:
+                                    first_ts = self._parse_recv_ts(json.loads(all_lines[0]).get('recv-timestamp', ''))
+                                except Exception:
+                                    first_ts = 0
+                                try:
+                                    last_ts = self._parse_recv_ts(json.loads(all_lines[-1]).get('recv-timestamp', ''))
+                                except Exception:
+                                    last_ts = 0
+                                if first_ts and last_ts and (first_ts > clip_end_ms or last_ts < clip_start_ms):
+                                    continue
+
+                                segments = []
+                                for line in all_lines:
+                                    try:
+                                        item = json.loads(line)
+                                    except json.JSONDecodeError:
+                                        continue
+                                    recv_ts = self._parse_recv_ts(item.get('recv-timestamp', ''))
+                                    if recv_ts and clip_start_ms <= recv_ts < clip_end_ms:
+                                        segments.append(item)
+
+                                if segments and (best_segments is None or len(segments) > len(best_segments)):
+                                    best_segments = segments
+                                    logging.debug(f"STT match: {d}/{fname}, {len(segments)} segments")
+
+                            except Exception as e:
+                                logging.debug(f"STT file read error {fpath}: {e}")
                                 continue
-                            if item.get('transcript', '').strip():
-                                all_segments.append(item)
+
+                if best_segments:
+                    best_segments.sort(key=lambda x: self._parse_recv_ts(x.get('recv-timestamp', '')))
+                    return best_segments, None
+
+                # 시간 매칭 실패 또는 realTime 기본값 → 디렉토리 전체 반환
+                if real_time_is_default:
+                    logging.warning("realTime 없음, 디렉토리 전체 반환")
+                else:
+                    logging.warning("STT 시간 매칭 실패, 디렉토리 전체 반환 fallback")
+                all_segs = []
+                for d in dirs:
+                    dir_path = f"{base_path}/{d}"
+                    try:
+                        files = [f for f in sftp_conn.listdir(dir_path) if f.endswith('.txt.done')]
                     except Exception:
                         continue
-            if all_segments:
-                all_segments.sort(key=lambda x: self._parse_recv_ts(x.get('recv-timestamp', '')))
-                return all_segments, None
+                    for fname in files:
+                        fpath = f"{dir_path}/{fname}"
+                        try:
+                            with sftp_conn.open(fpath, 'rb') as fh:
+                                raw = fh.read()
+                            for line in raw.decode('utf-8', errors='ignore').split('\n'):
+                                line = line.strip()
+                                if not line or line == 'HW':
+                                    continue
+                                try:
+                                    item = json.loads(line)
+                                except json.JSONDecodeError:
+                                    continue
+                                if item.get('transcript', '').strip():
+                                    all_segs.append(item)
+                        except Exception:
+                            continue
+                if all_segs:
+                    all_segs.sort(key=lambda x: self._parse_recv_ts(x.get('recv-timestamp', '')))
+                    return all_segs, None
+                return None, None  # 자막 없음 (에러 아님)
+
+            # 1) 주 서버에서 시도
+            base_path = _find_base(sftp, self.stt_base_path.get())
+            if base_path:
+                segs, err = _search_in_base(sftp, base_path)
+                if segs:
+                    return segs, None
+                if err:
+                    logging.warning(f"[STT] 주 서버 오류: {err}")
+            else:
+                logging.warning(f"[STT] 주 서버에서 날짜 디렉토리 없음: {date_str}")
+
+            # 2) 보조 서버에서 시도 (주 서버를 점프호스트로 터널링)
+            if not self.stt_host2.get():
+                return None, "해당 클립에 매칭되는 자막 없음"
+
+            self.update_status("[STT] 보조 서버 연결 중...")
+            try:
+                channel = ssh.get_transport().open_channel(
+                    'direct-tcpip',
+                    (self.stt_host2.get(), 22),
+                    ('127.0.0.1', 0),
+                )
+                ssh2 = paramiko.SSHClient()
+                ssh2.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                ssh2.connect(
+                    self.stt_host2.get(), sock=channel,
+                    username=self.stt_user2.get(),
+                    password=self.stt_password2.get(),
+                    timeout=15,
+                )
+                sftp2 = ssh2.open_sftp()
+            except Exception as e:
+                return None, f"보조 서버 연결 실패: {e}"
+
+            base_root2 = self.stt_base_path2.get() or self.stt_base_path.get()
+            base_path2 = _find_base(sftp2, base_root2)
+            if base_path2:
+                segs2, err2 = _search_in_base(sftp2, base_path2)
+                if segs2:
+                    return segs2, None
+                if err2:
+                    return None, err2
+            else:
+                logging.warning(f"[STT] 보조 서버에서도 날짜 디렉토리 없음: {date_str}")
+
             return None, "해당 클립에 매칭되는 자막 없음"
 
         finally:
-            try:
-                sftp.close()
-            except Exception:
-                pass
-            try:
-                ssh.close()
-            except Exception:
-                pass
+            for obj in [sftp2, ssh2, sftp, ssh]:
+                try:
+                    obj.close()
+                except Exception:
+                    pass
 
     @staticmethod
     def _parse_recv_ts(ts_str):
