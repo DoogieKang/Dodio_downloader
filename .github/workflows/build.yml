@@ -39,6 +39,9 @@ jobs:
           STT_HOST: ${{ secrets.STT_HOST }}
           STT_USER: ${{ secrets.STT_USER }}
           STT_BASE_PATH: ${{ secrets.STT_BASE_PATH }}
+          STT_HOST2: ${{ secrets.STT_HOST2 }}
+          STT_USER2: ${{ secrets.STT_USER2 }}
+          STT_BASE_PATH2: ${{ secrets.STT_BASE_PATH2 }}
         run: |
           python -c "
           import json, os
@@ -46,7 +49,11 @@ jobs:
               'stt_host': os.environ['STT_HOST'],
               'stt_user': os.environ['STT_USER'],
               'stt_password': '',
-              'stt_base_path': os.environ['STT_BASE_PATH']
+              'stt_base_path': os.environ['STT_BASE_PATH'],
+              'stt_host2': os.environ.get('STT_HOST2', ''),
+              'stt_user2': os.environ.get('STT_USER2', ''),
+              'stt_password2': '',
+              'stt_base_path2': os.environ.get('STT_BASE_PATH2', '')
           }
           with open('default_config.json', 'w', encoding='utf-8') as f:
               json.dump(cfg, f, ensure_ascii=False, indent=2)
@@ -103,6 +110,9 @@ jobs:
           STT_HOST: ${{ secrets.STT_HOST }}
           STT_USER: ${{ secrets.STT_USER }}
           STT_BASE_PATH: ${{ secrets.STT_BASE_PATH }}
+          STT_HOST2: ${{ secrets.STT_HOST2 }}
+          STT_USER2: ${{ secrets.STT_USER2 }}
+          STT_BASE_PATH2: ${{ secrets.STT_BASE_PATH2 }}
         run: |
           python3 -c "
           import json, os
@@ -110,7 +120,11 @@ jobs:
               'stt_host': os.environ['STT_HOST'],
               'stt_user': os.environ['STT_USER'],
               'stt_password': '',
-              'stt_base_path': os.environ['STT_BASE_PATH']
+              'stt_base_path': os.environ['STT_BASE_PATH'],
+              'stt_host2': os.environ.get('STT_HOST2', ''),
+              'stt_user2': os.environ.get('STT_USER2', ''),
+              'stt_password2': '',
+              'stt_base_path2': os.environ.get('STT_BASE_PATH2', '')
           }
           with open('default_config.json', 'w', encoding='utf-8') as f:
               json.dump(cfg, f, ensure_ascii=False, indent=2)
