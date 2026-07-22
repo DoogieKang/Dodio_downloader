@@ -116,7 +116,9 @@ class SeminarGUI:
         self.seminars_by_id = {}
         self.fetch_thread = None
         self.download_thread = None
+        self.full_bulk_subtitle_thread = None
         self.summary_bulk_subtitle_thread = None
+        self.press_bulk_subtitle_thread = None
         self.ffmpeg_ready = self._check_ffmpeg()
         
         # --- Selenium Configuration Variables ---
@@ -400,6 +402,15 @@ class SeminarGUI:
     
     def _create_downloader_tab(self, parent):
         self._create_content_list_tab(parent, "FULL")
+        bulk_frame = ttk.Frame(parent)
+        bulk_frame.pack(fill=tk.X, pady=(6, 0))
+        ttk.Separator(bulk_frame, orient='horizontal').pack(fill=tk.X, pady=(0, 6))
+        self.full_bulk_btn = ttk.Button(
+            bulk_frame, text="세미나 자막 일괄다운로드",
+            command=self._start_full_bulk_subtitle_download)
+        self.full_bulk_btn.pack(side=tk.LEFT)
+        self.full_bulk_label = ttk.Label(bulk_frame, text="", style='Muted.TLabel')
+        self.full_bulk_label.pack(side=tk.LEFT, padx=(10, 0))
 
     def _create_summary_tab(self, parent):
         self._create_content_list_tab(parent, "SUMMARY")
@@ -418,6 +429,15 @@ class SeminarGUI:
 
     def _create_press_conference_tab(self, parent):
         self._create_content_list_tab(parent, "PRESS")
+        bulk_frame = ttk.Frame(parent)
+        bulk_frame.pack(fill=tk.X, pady=(6, 0))
+        ttk.Separator(bulk_frame, orient='horizontal').pack(fill=tk.X, pady=(0, 6))
+        self.press_bulk_btn = ttk.Button(
+            bulk_frame, text="기자회견 자막 일괄다운로드",
+            command=self._start_press_bulk_subtitle_download)
+        self.press_bulk_btn.pack(side=tk.LEFT)
+        self.press_bulk_label = ttk.Label(bulk_frame, text="", style='Muted.TLabel')
+        self.press_bulk_label.pack(side=tk.LEFT, padx=(10, 0))
 
     def _create_committee_tab(self, parent):
         """상임위 탭 UI를 생성합니다 (w3.assembly.go.kr)."""
@@ -1228,6 +1248,144 @@ class SeminarGUI:
             self.master.after(0, progress_bar.config, {'mode': 'determinate', 'value': 0})
             self.master.after(0, lambda ct=seminar_data['content_type']: self.on_content_select(event=None, content_type_filter=ct))
         logging.debug("_download_ai_subtitle_only finished.")
+
+    def _start_full_bulk_subtitle_download(self):
+        if self.full_bulk_subtitle_thread and self.full_bulk_subtitle_thread.is_alive():
+            messagebox.showwarning("진행 중", "이미 일괄 다운로드 중입니다.")
+            return
+        if not self.seminars_full:
+            messagebox.showinfo("목록 없음", "세미나 목록을 먼저 새로고침 해주세요.")
+            return
+        if not messagebox.askyesno("일괄 자막 다운로드",
+                                   f"세미나 {len(self.seminars_full)}개의 자막을 일괄 다운로드합니다.\n계속하시겠습니까?"):
+            return
+        self.full_bulk_subtitle_thread = threading.Thread(
+            target=self._full_bulk_subtitle_worker, daemon=True)
+        self.full_bulk_subtitle_thread.start()
+
+    def _full_bulk_subtitle_worker(self):
+        items = list(self.seminars_full)
+        total = len(items)
+        self.master.after(0, self.full_bulk_btn.config, {'state': tk.DISABLED})
+        self.master.after(0, self.downloader_progress_bar.config, {'mode': 'determinate', 'maximum': total, 'value': 0})
+        try:
+            extractor = SeleniumSubtitleExtractor(
+                download_dir=DOWNLOAD_DIR,
+                user_agent=self.selenium_user_agent.get() if self.selenium_user_agent.get() else None,
+                headless=self.selenium_headless_mode.get(),
+                driver_path=self.selenium_driver_path.get() if self.selenium_driver_path.get() else None
+            )
+        except Exception as e:
+            self.update_status(f"Selenium 초기화 실패: {e}")
+            self.master.after(0, self.full_bulk_btn.config, {'state': tk.NORMAL})
+            return
+        success_count = skip_count = fail_count = 0
+        for idx, item in enumerate(items):
+            cid = item.get('id')
+            title = self._sanitize_filename(item['title'])
+            base_filename = os.path.join(DOWNLOAD_DIR, f"{self._date_prefix(item)}{title}")
+            txt_path = f"{base_filename}.txt"
+            self.master.after(0, self.downloader_progress_bar.config, {'value': idx})
+            self.master.after(0, self.full_bulk_label.config,
+                              {'text': f"[{idx+1}/{total}] {item['title'][:30]}..."})
+            if os.path.exists(txt_path):
+                self.update_status(f"[{idx+1}/{total}] 건너뜀(이미 존재): {title}")
+                skip_count += 1
+                continue
+            self.update_status(f"[{idx+1}/{total}] 자막 다운로드 중: {title}")
+            try:
+                cont_id = extractor.get_cont_id_from_cid(cid, item.get('sid', ''))
+                if not cont_id:
+                    fail_count += 1
+                    continue
+                subtitle_filepath = extractor.download_subtitle(cont_id, title)
+                if subtitle_filepath:
+                    if subtitle_filepath.lower().endswith(".smi"):
+                        plain_text = self.extract_text_from_smi(subtitle_filepath)
+                        if plain_text:
+                            with open(txt_path, 'w', encoding='utf-8') as f:
+                                f.write(plain_text)
+                    success_count += 1
+                else:
+                    fail_count += 1
+            except Exception as e:
+                logging.error(f"[bulk-full] 자막 오류 cid={cid}: {e}", exc_info=True)
+                fail_count += 1
+        self.master.after(0, self.downloader_progress_bar.config, {'value': total})
+        self.master.after(0, self.full_bulk_label.config, {'text': ""})
+        self.master.after(0, self.full_bulk_btn.config, {'state': tk.NORMAL})
+        self.update_status(f"일괄 자막 완료 — 성공: {success_count}, 건너뜀: {skip_count}, 실패: {fail_count} / 총 {total}개")
+        self.master.after(0, messagebox.showinfo, "완료",
+                          f"세미나 자막 일괄 다운로드 완료\n성공: {success_count}  건너뜀: {skip_count}  실패: {fail_count}")
+
+    def _start_press_bulk_subtitle_download(self):
+        if self.press_bulk_subtitle_thread and self.press_bulk_subtitle_thread.is_alive():
+            messagebox.showwarning("진행 중", "이미 일괄 다운로드 중입니다.")
+            return
+        if not self.seminars_press:
+            messagebox.showinfo("목록 없음", "기자회견 목록을 먼저 새로고침 해주세요.")
+            return
+        if not messagebox.askyesno("일괄 자막 다운로드",
+                                   f"기자회견 {len(self.seminars_press)}개의 자막을 일괄 다운로드합니다.\n계속하시겠습니까?"):
+            return
+        self.press_bulk_subtitle_thread = threading.Thread(
+            target=self._press_bulk_subtitle_worker, daemon=True)
+        self.press_bulk_subtitle_thread.start()
+
+    def _press_bulk_subtitle_worker(self):
+        items = list(self.seminars_press)
+        total = len(items)
+        self.master.after(0, self.press_bulk_btn.config, {'state': tk.DISABLED})
+        self.master.after(0, self.press_conference_progress_bar.config, {'mode': 'determinate', 'maximum': total, 'value': 0})
+        try:
+            extractor = SeleniumSubtitleExtractor(
+                download_dir=DOWNLOAD_DIR,
+                user_agent=self.selenium_user_agent.get() if self.selenium_user_agent.get() else None,
+                headless=self.selenium_headless_mode.get(),
+                driver_path=self.selenium_driver_path.get() if self.selenium_driver_path.get() else None
+            )
+        except Exception as e:
+            self.update_status(f"Selenium 초기화 실패: {e}")
+            self.master.after(0, self.press_bulk_btn.config, {'state': tk.NORMAL})
+            return
+        success_count = skip_count = fail_count = 0
+        for idx, item in enumerate(items):
+            cid = item.get('id')
+            title = self._sanitize_filename(item['title'])
+            base_filename = os.path.join(DOWNLOAD_DIR, f"{self._date_prefix(item)}{title}")
+            txt_path = f"{base_filename}.txt"
+            self.master.after(0, self.press_conference_progress_bar.config, {'value': idx})
+            self.master.after(0, self.press_bulk_label.config,
+                              {'text': f"[{idx+1}/{total}] {item['title'][:30]}..."})
+            if os.path.exists(txt_path):
+                self.update_status(f"[{idx+1}/{total}] 건너뜀(이미 존재): {title}")
+                skip_count += 1
+                continue
+            self.update_status(f"[{idx+1}/{total}] 자막 다운로드 중: {title}")
+            try:
+                cont_id = extractor.get_cont_id_from_cid(cid, item.get('sid', ''))
+                if not cont_id:
+                    fail_count += 1
+                    continue
+                subtitle_filepath = extractor.download_subtitle(cont_id, title)
+                if subtitle_filepath:
+                    if subtitle_filepath.lower().endswith(".smi"):
+                        plain_text = self.extract_text_from_smi(subtitle_filepath)
+                        if plain_text:
+                            with open(txt_path, 'w', encoding='utf-8') as f:
+                                f.write(plain_text)
+                    success_count += 1
+                else:
+                    fail_count += 1
+            except Exception as e:
+                logging.error(f"[bulk-press] 자막 오류 cid={cid}: {e}", exc_info=True)
+                fail_count += 1
+        self.master.after(0, self.press_conference_progress_bar.config, {'value': total})
+        self.master.after(0, self.press_bulk_label.config, {'text': ""})
+        self.master.after(0, self.press_bulk_btn.config, {'state': tk.NORMAL})
+        self.update_status(f"일괄 자막 완료 — 성공: {success_count}, 건너뜀: {skip_count}, 실패: {fail_count} / 총 {total}개")
+        self.master.after(0, messagebox.showinfo, "완료",
+                          f"기자회견 자막 일괄 다운로드 완료\n성공: {success_count}  건너뜀: {skip_count}  실패: {fail_count}")
 
     def _start_summary_bulk_subtitle_download(self):
         if self.summary_bulk_subtitle_thread and self.summary_bulk_subtitle_thread.is_alive():
