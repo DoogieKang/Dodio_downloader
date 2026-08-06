@@ -40,7 +40,7 @@ from selenium_subtitle_extractor import SeleniumSubtitleExtractor # Added
 
 
 # --- Constants ---
-APP_VERSION = "2.4.4"
+APP_VERSION = "2.4.5"
 GITHUB_REPO = "doogiekang/Dodio_downloader"
 UPDATE_CHECK_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 UPDATE_INSTALLER_URL = ""  # 최신 릴리즈에서 자동으로 가져옴
@@ -2155,8 +2155,7 @@ class SeminarGUI:
             try:
                 script = (
                     'tell application "System Events" to activate\n'
-                    'set f to choose file with prompt "엑셀 파일 선택" '
-                    'of type {"xlsx", "xls", "com.microsoft.excel.xls"}\n'
+                    'set f to choose file with prompt "엑셀 파일 선택 (.xlsx)"\n'
                     'return POSIX path of f'
                 )
                 result = subprocess.run(['osascript', '-e', script],
