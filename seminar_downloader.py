@@ -119,6 +119,8 @@ class SeminarGUI:
         self.full_bulk_subtitle_thread = None
         self.summary_bulk_subtitle_thread = None
         self.press_bulk_subtitle_thread = None
+        self.excel_download_thread = None
+        self._excel_items = []  # 엑셀에서 파싱한 아이템 목록
         self.ffmpeg_ready = self._check_ffmpeg()
         
         # --- Selenium Configuration Variables ---
@@ -185,13 +187,15 @@ class SeminarGUI:
         self.press_conference_tab = ttk.Frame(self.notebook, padding="12")
 
         self.committee_tab = ttk.Frame(self.notebook, padding="12")
-        self.cart_tab = ttk.Frame(self.notebook, padding="12")
+        self.cart_tab     = ttk.Frame(self.notebook, padding="12")
+        self.excel_tab    = ttk.Frame(self.notebook, padding="12")
 
         self.notebook.add(self.downloader_tab, text='세미나')
         self.notebook.add(self.summary_tab, text='세미나-요약영상')
         self.notebook.add(self.press_conference_tab, text='기자회견')
         self.notebook.add(self.committee_tab, text='상임위')
         self.notebook.add(self.cart_tab, text='장바구니 🛒')
+        self.notebook.add(self.excel_tab, text='엑셀 업로드 📋')
 
         # --- Build Downloader Tab ---
         self._create_downloader_tab(self.downloader_tab)
@@ -207,6 +211,9 @@ class SeminarGUI:
 
         # --- Build Cart Tab ---
         self._create_cart_tab(self.cart_tab)
+
+        # --- Build Excel Tab ---
+        self._create_excel_tab(self.excel_tab)
 
         # --- 상임위 탭: 캐시 파일에서 로드 (탭 전환 시) ---
         self._committee_loaded = False
@@ -2090,6 +2097,281 @@ class SeminarGUI:
 
         self.cart_progress_bar = ttk.Progressbar(parent, mode='determinate', length=400)
         self.cart_progress_bar.pack(fill=tk.X, pady=(0, 4))
+
+    # ── 엑셀 업로드 탭 ──────────────────────────────────────────────────────
+    def _create_excel_tab(self, parent):
+        # 파일 선택 영역
+        file_row = ttk.Frame(parent)
+        file_row.pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(file_row, text="엑셀 파일:").pack(side=tk.LEFT)
+        self.excel_path_var = tk.StringVar(value="파일을 선택하세요 (.xlsx)")
+        ttk.Entry(file_row, textvariable=self.excel_path_var, state='readonly', width=50).pack(side=tk.LEFT, padx=(6, 4), fill=tk.X, expand=True)
+        ttk.Button(file_row, text="파일 선택", command=self._excel_pick_file).pack(side=tk.LEFT)
+
+        # 미리보기 트리뷰
+        lf = ttk.LabelFrame(parent, text="엑셀 내용 미리보기", padding=4)
+        lf.pack(fill=tk.BOTH, expand=True, pady=(0, 6))
+        cols = ('서비스명', '영상 제목', '콘텐츠ID', '재생시간', '등록일시')
+        vsb = ttk.Scrollbar(lf, orient=tk.VERTICAL)
+        hsb = ttk.Scrollbar(lf, orient=tk.HORIZONTAL)
+        self.excel_tree = ttk.Treeview(lf, columns=cols, show='headings',
+                                       yscrollcommand=vsb.set, xscrollcommand=hsb.set, height=15)
+        vsb.config(command=self.excel_tree.yview)
+        hsb.config(command=self.excel_tree.xview)
+        widths = {'서비스명': 80, '영상 제목': 360, '콘텐츠ID': 80, '재생시간': 70, '등록일시': 140}
+        for c in cols:
+            self.excel_tree.heading(c, text=c)
+            self.excel_tree.column(c, width=widths.get(c, 100), minwidth=50)
+        self.excel_tree.grid(row=0, column=0, sticky='nsew')
+        vsb.grid(row=0, column=1, sticky='ns')
+        hsb.grid(row=1, column=0, sticky='ew')
+        lf.rowconfigure(0, weight=1)
+        lf.columnconfigure(0, weight=1)
+
+        # 카운트 레이블
+        self.excel_count_label = ttk.Label(parent, text="")
+        self.excel_count_label.pack(anchor=tk.W)
+
+        # 다운로드 모드 + 버튼
+        ctrl = ttk.Frame(parent)
+        ctrl.pack(fill=tk.X, pady=(4, 0))
+        self.excel_mode_var = tk.StringVar(value='subtitle')
+        for label, val in [("자막만", "subtitle"), ("자막+영상", "all"), ("영상만", "video")]:
+            ttk.Radiobutton(ctrl, text=label, variable=self.excel_mode_var, value=val).pack(side=tk.LEFT, padx=(0, 8))
+        self.excel_dl_btn = ttk.Button(ctrl, text="다운로드 시작", command=self._start_excel_download, state=tk.DISABLED)
+        self.excel_dl_btn.pack(side=tk.LEFT, padx=(12, 0))
+        self.excel_dl_label = ttk.Label(ctrl, text="")
+        self.excel_dl_label.pack(side=tk.LEFT, padx=(10, 0))
+
+        self.excel_progress_bar = ttk.Progressbar(parent, mode='determinate', length=400)
+        self.excel_progress_bar.pack(fill=tk.X, pady=(6, 0))
+
+    def _excel_pick_file(self):
+        from tkinter import filedialog
+        path = filedialog.askopenfilename(
+            title="엑셀 파일 선택",
+            filetypes=[("Excel 파일", "*.xlsx *.xls"), ("모든 파일", "*.*")]
+        )
+        if not path:
+            return
+        self.excel_path_var.set(path)
+        self._excel_load_file(path)
+
+    def _excel_load_file(self, path):
+        try:
+            import openpyxl
+        except ImportError:
+            messagebox.showerror("오류", "openpyxl 미설치\npip install openpyxl")
+            return
+        try:
+            wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+            ws = wb.active
+            headers = [ws.cell(1, c).value for c in range(1, ws.max_column + 1)]
+
+            # 컬럼 인덱스 자동 탐지
+            def col_idx(names):
+                for name in names:
+                    for i, h in enumerate(headers):
+                        if h and name in str(h):
+                            return i
+                return None
+
+            idx_svc   = col_idx(['서비스명'])
+            idx_title = col_idx(['영상 제목', '제목'])
+            idx_cid   = col_idx(['콘텐츠ID', 'cid', 'CID'])
+            idx_dur   = col_idx(['재생 시간', '재생시간', '시간'])
+            idx_date  = col_idx(['등록일시', '날짜', '등록일'])
+
+            if idx_cid is None or idx_title is None:
+                messagebox.showerror("오류", f"필수 컬럼(콘텐츠ID, 영상 제목)을 찾을 수 없습니다.\n헤더: {headers}")
+                return
+
+            SERVICE_MAP = {'기자회견': 'PRESSCONF', '세미나': 'FULL', '요약영상': 'SUMMARY', '정책세미나': 'FULL'}
+
+            items = []
+            for row in ws.iter_rows(min_row=2, values_only=True):
+                cid = row[idx_cid] if idx_cid is not None else None
+                if not cid:
+                    continue
+                svc_raw = str(row[idx_svc]).strip() if idx_svc is not None and row[idx_svc] else ''
+                content_type = SERVICE_MAP.get(svc_raw, 'PRESSCONF')
+                items.append({
+                    'cid':          str(int(cid)) if isinstance(cid, float) else str(cid),
+                    'title':        str(row[idx_title]).strip() if row[idx_title] else '',
+                    'service':      svc_raw,
+                    'content_type': content_type,
+                    'duration':     str(row[idx_dur]).strip() if idx_dur is not None and row[idx_dur] else '',
+                    'date':         str(row[idx_date]).strip() if idx_date is not None and row[idx_date] else '',
+                })
+            wb.close()
+        except Exception as e:
+            messagebox.showerror("오류", f"엑셀 읽기 실패: {e}")
+            return
+
+        self._excel_items = items
+
+        # 트리뷰 채우기
+        for row in self.excel_tree.get_children():
+            self.excel_tree.delete(row)
+        for it in items:
+            self.excel_tree.insert('', 'end', values=(
+                it['service'], it['title'], it['cid'], it['duration'], it['date']
+            ))
+
+        self.excel_count_label.config(text=f"총 {len(items)}개 항목")
+        self.excel_dl_btn.config(state=tk.NORMAL if items else tk.DISABLED)
+
+    def _start_excel_download(self):
+        if self.excel_download_thread and self.excel_download_thread.is_alive():
+            messagebox.showwarning("진행 중", "이미 다운로드 중입니다.")
+            return
+        if not self._excel_items:
+            messagebox.showinfo("없음", "엑셀 파일을 먼저 불러오세요.")
+            return
+        if not messagebox.askyesno("다운로드 확인",
+                                   f"{len(self._excel_items)}개 항목을 다운로드합니다.\n계속하시겠습니까?"):
+            return
+        mode = self.excel_mode_var.get()
+        self.excel_download_thread = threading.Thread(
+            target=self._excel_download_worker, args=(list(self._excel_items), mode), daemon=True)
+        self.excel_download_thread.start()
+
+    def _excel_download_worker(self, items, mode):
+        total = len(items)
+        do_subtitle = mode in ('subtitle', 'all')
+        do_video    = mode in ('video', 'all')
+
+        self.master.after(0, self.excel_dl_btn.config, {'state': tk.DISABLED})
+        self.master.after(0, self.excel_progress_bar.config,
+                          {'mode': 'determinate', 'maximum': total, 'value': 0})
+
+        # Selenium extractor (자막용)
+        extractor = None
+        if do_subtitle:
+            try:
+                extractor = SeleniumSubtitleExtractor(
+                    download_dir=DOWNLOAD_DIR,
+                    user_agent=self.selenium_user_agent.get() if self.selenium_user_agent.get() else None,
+                    headless=self.selenium_headless_mode.get(),
+                    driver_path=self.selenium_driver_path.get() if self.selenium_driver_path.get() else None
+                )
+            except Exception as e:
+                self.update_status(f"Selenium 초기화 실패: {e}")
+                self.master.after(0, self.excel_dl_btn.config, {'state': tk.NORMAL})
+                return
+
+        success = skip = fail = 0
+
+        for idx, item in enumerate(items):
+            cid   = item['cid']
+            title = self._sanitize_filename(item['title'])
+            ctype = item['content_type']
+            date_prefix = item['date'][:10].replace('-', '') + '_' if item.get('date') else ''
+            base  = os.path.join(DOWNLOAD_DIR, f"{date_prefix}{title}")
+
+            self.master.after(0, self.excel_progress_bar.config, {'value': idx})
+            self.master.after(0, self.excel_dl_label.config,
+                              {'text': f"[{idx+1}/{total}] {item['title'][:28]}..."})
+            self.update_status(f"[{idx+1}/{total}] {title}")
+
+            try:
+                # contentInfo API로 영상 URL / aiCC 가져오기
+                info = None
+                if do_video or do_subtitle:
+                    info = self._fetch_content_info(cid, sid=0, content_type=ctype)
+
+                # ── 자막 다운로드 ──
+                if do_subtitle:
+                    txt_path = f"{base}.txt"
+                    if os.path.exists(txt_path):
+                        skip += 1
+                    else:
+                        sub_done = False
+                        # 1) aiCC (AI자막)
+                        if info and info.get('aiCC'):
+                            ai_done = self._download_ai_subtitle(info['aiCC'], base)
+                            if ai_done:
+                                sub_done = True
+                        # 2) smiUrl / vttUrl
+                        if not sub_done and info:
+                            sub_url = info.get('smiUrl') or info.get('vttUrl')
+                            if sub_url:
+                                ext = '.smi' if 'smi' in sub_url.lower() else '.vtt'
+                                r = requests.get(sub_url, headers=self.headers, timeout=30)
+                                if r.status_code == 200:
+                                    raw_path = f"{base}{ext}"
+                                    with open(raw_path, 'wb') as f:
+                                        f.write(r.content)
+                                    if ext == '.smi':
+                                        text = self.extract_text_from_smi(raw_path)
+                                        if text:
+                                            with open(txt_path, 'w', encoding='utf-8') as f:
+                                                f.write(text)
+                                    sub_done = True
+                        # 3) Selenium fallback
+                        if not sub_done and extractor:
+                            cont_id = extractor.get_cont_id_from_cid(cid, '')
+                            if cont_id:
+                                sf = extractor.download_subtitle(cont_id, title)
+                                if sf:
+                                    if sf.lower().endswith('.smi'):
+                                        text = self.extract_text_from_smi(sf)
+                                        if text:
+                                            with open(txt_path, 'w', encoding='utf-8') as f:
+                                                f.write(text)
+                                    sub_done = True
+                        if sub_done:
+                            success += 1
+                        else:
+                            fail += 1
+                            logging.warning(f"[excel] 자막 없음: cid={cid} {title}")
+
+                # ── 영상 다운로드 ──
+                if do_video:
+                    vid_url = None
+                    if info:
+                        vid_url = info.get('videoFile1') or info.get('videoFile2') or info.get('videoFile3')
+                    if vid_url:
+                        ext = os.path.splitext(vid_url)[-1] or '.mp4'
+                        out_path = f"{base}{ext}"
+                        if os.path.exists(out_path):
+                            if not do_subtitle:
+                                skip += 1
+                        else:
+                            self._download_with_ffmpeg(vid_url, out_path)
+                            if not do_subtitle:
+                                success += 1
+                    else:
+                        if not do_subtitle:
+                            fail += 1
+                        logging.warning(f"[excel] 영상 URL 없음: cid={cid}")
+
+            except Exception as e:
+                logging.error(f"[excel] 오류 cid={cid}: {e}", exc_info=True)
+                fail += 1
+
+        self.master.after(0, self.excel_progress_bar.config, {'value': total})
+        self.master.after(0, self.excel_dl_label.config, {'text': ""})
+        self.master.after(0, self.excel_dl_btn.config, {'state': tk.NORMAL})
+        self.update_status(f"엑셀 다운로드 완료 — 성공: {success}, 건너뜀: {skip}, 실패: {fail} / 총 {total}개")
+        self.master.after(0, messagebox.showinfo, "완료",
+                          f"엑셀 다운로드 완료\n성공: {success}  건너뜀: {skip}  실패: {fail}")
+        if extractor:
+            try:
+                extractor.close()
+            except Exception:
+                pass
+
+    def _download_with_ffmpeg(self, url, out_path):
+        """ffmpeg로 단일 영상 파일을 다운로드합니다."""
+        ffmpeg = self._get_ffmpeg_path()
+        if not ffmpeg:
+            return
+        cmd = [ffmpeg, '-y', '-i', url, '-c', 'copy', out_path]
+        try:
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3600)
+        except Exception as e:
+            logging.error(f"ffmpeg error: {e}")
 
     def _w3_download_videos(self, conf, clips, quality='고화질'):
         mc  = conf.get('mc', '')

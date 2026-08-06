@@ -3,3 +3,4 @@ selenium
 webdriver-manager
 paramiko
 ttkbootstrap
+openpyxl
