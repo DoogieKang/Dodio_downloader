@@ -40,7 +40,7 @@ from selenium_subtitle_extractor import SeleniumSubtitleExtractor # Added
 
 
 # --- Constants ---
-APP_VERSION = "2.3.0"
+APP_VERSION = "2.4.1"
 GITHUB_REPO = "doogiekang/Dodio_downloader"
 UPDATE_CHECK_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 UPDATE_INSTALLER_URL = ""  # 최신 릴리즈에서 자동으로 가져옴
@@ -2148,10 +2148,18 @@ class SeminarGUI:
 
     def _excel_pick_file(self):
         from tkinter import filedialog
-        path = filedialog.askopenfilename(
-            title="엑셀 파일 선택",
-            filetypes=[("Excel 파일", "*.xlsx *.xls"), ("모든 파일", "*.*")]
-        )
+        try:
+            root = self.master.winfo_toplevel()
+            root.lift()
+            root.focus_force()
+            path = filedialog.askopenfilename(
+                parent=root,
+                title="엑셀 파일 선택",
+                filetypes=[("Excel 파일", "*.xlsx *.xls"), ("모든 파일", "*.*")]
+            )
+        except Exception as e:
+            messagebox.showerror("오류", f"파일 선택 실패: {e}")
+            return
         if not path:
             return
         self.excel_path_var.set(path)
