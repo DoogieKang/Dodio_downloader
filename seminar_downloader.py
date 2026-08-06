@@ -2244,6 +2244,34 @@ class SeminarGUI:
             target=self._excel_download_worker, args=(list(self._excel_items), mode), daemon=True)
         self.excel_download_thread.start()
 
+    def _excel_find_video_url(self, item):
+        """contentList API로 날짜+제목 검색해 영상 URL 반환. 동일 제목 구분은 등록일시로."""
+        date_str = item.get('date', '')
+        if not date_str:
+            return None
+        date_ymd = date_str[:10].replace('-', '')  # 'YYYYMMDD'
+        ctype = item['content_type']
+        raw_title = item['title']
+        payload = json.dumps({
+            'contentType': ctype,
+            'startDate': date_ymd,
+            'endDate': date_ymd,
+            'page': 1,
+            'limit': 50,
+        })
+        try:
+            r = requests.post(self.content_list_url, headers=self.headers, data=payload, timeout=15)
+            r.raise_for_status()
+            d = r.json()
+            lst = d.get('data', {}).get('list', []) if isinstance(d.get('data'), dict) else (d.get('data') or [])
+            for entry in lst:
+                if entry.get('title', '').strip() == raw_title.strip():
+                    url = entry.get('videoFile3') or entry.get('videoFile2') or entry.get('videoFile1')
+                    return url
+        except Exception as e:
+            logging.warning(f"[excel] 영상 URL 검색 실패: {e}")
+        return None
+
     def _excel_download_worker(self, items, mode):
         total = len(items)
         do_subtitle = mode in ('subtitle', 'all')
@@ -2253,27 +2281,12 @@ class SeminarGUI:
         self.master.after(0, self.excel_progress_bar.config,
                           {'mode': 'determinate', 'maximum': total, 'value': 0})
 
-        # Selenium extractor (자막용)
-        extractor = None
-        if do_subtitle:
-            try:
-                extractor = SeleniumSubtitleExtractor(
-                    download_dir=DOWNLOAD_DIR,
-                    user_agent=self.selenium_user_agent.get() if self.selenium_user_agent.get() else None,
-                    headless=self.selenium_headless_mode.get(),
-                    driver_path=self.selenium_driver_path.get() if self.selenium_driver_path.get() else None
-                )
-            except Exception as e:
-                self.update_status(f"Selenium 초기화 실패: {e}")
-                self.master.after(0, self.excel_dl_btn.config, {'state': tk.NORMAL})
-                return
-
         success = skip = fail = 0
 
         for idx, item in enumerate(items):
-            cid   = item['cid']
-            title = self._sanitize_filename(item['title'])
-            ctype = item['content_type']
+            # 엑셀 콘텐츠ID = aiCC (자막 contId). cid/sid와 다름.
+            ai_cc_id = item['cid']
+            title    = self._sanitize_filename(item['title'])
             date_prefix = item['date'][:10].replace('-', '') + '_' if item.get('date') else ''
             base  = os.path.join(DOWNLOAD_DIR, f"{date_prefix}{title}")
 
@@ -2283,79 +2296,39 @@ class SeminarGUI:
             self.update_status(f"[{idx+1}/{total}] {title}")
 
             try:
-                # contentInfo API로 영상 URL / aiCC 가져오기
-                info = None
-                if do_video or do_subtitle:
-                    info = self._fetch_content_info(cid, sid=0, content_type=ctype)
-
-                # ── 자막 다운로드 ──
+                # ── 자막 다운로드 ── (엑셀 콘텐츠ID를 aiCC contId로 직접 사용)
                 if do_subtitle:
                     txt_path = f"{base}.txt"
                     if os.path.exists(txt_path):
                         skip += 1
                     else:
-                        sub_done = False
-                        # 1) aiCC (AI자막)
-                        if info and info.get('aiCC'):
-                            ai_done = self._download_ai_subtitle(info['aiCC'], base)
-                            if ai_done:
-                                sub_done = True
-                        # 2) smiUrl / vttUrl
-                        if not sub_done and info:
-                            sub_url = info.get('smiUrl') or info.get('vttUrl')
-                            if sub_url:
-                                ext = '.smi' if 'smi' in sub_url.lower() else '.vtt'
-                                r = requests.get(sub_url, headers=self.headers, timeout=30)
-                                if r.status_code == 200:
-                                    raw_path = f"{base}{ext}"
-                                    with open(raw_path, 'wb') as f:
-                                        f.write(r.content)
-                                    if ext == '.smi':
-                                        text = self.extract_text_from_smi(raw_path)
-                                        if text:
-                                            with open(txt_path, 'w', encoding='utf-8') as f:
-                                                f.write(text)
-                                    sub_done = True
-                        # 3) Selenium fallback
-                        if not sub_done and extractor:
-                            cont_id = extractor.get_cont_id_from_cid(cid, '')
-                            if cont_id:
-                                sf = extractor.download_subtitle(cont_id, title)
-                                if sf:
-                                    if sf.lower().endswith('.smi'):
-                                        text = self.extract_text_from_smi(sf)
-                                        if text:
-                                            with open(txt_path, 'w', encoding='utf-8') as f:
-                                                f.write(text)
-                                    sub_done = True
-                        if sub_done:
+                        ai_done = self._download_ai_subtitle(ai_cc_id, base)
+                        if ai_done:
                             success += 1
                         else:
                             fail += 1
-                            logging.warning(f"[excel] 자막 없음: cid={cid} {title}")
+                            logging.warning(f"[excel] 자막 없음: aiCC={ai_cc_id} {title}")
 
-                # ── 영상 다운로드 ──
+                # ── 영상 다운로드 ── (날짜+제목으로 contentList 검색)
                 if do_video:
-                    vid_url = None
-                    if info:
-                        vid_url = info.get('videoFile1') or info.get('videoFile2') or info.get('videoFile3')
-                    if vid_url:
-                        ext = os.path.splitext(vid_url)[-1] or '.mp4'
-                        out_path = f"{base}{ext}"
-                        if os.path.exists(out_path):
-                            if not do_subtitle:
-                                skip += 1
-                        else:
+                    ext_suffix = '.mp4'
+                    out_path = f"{base}{ext_suffix}"
+                    if os.path.exists(out_path):
+                        if not do_subtitle:
+                            skip += 1
+                    else:
+                        vid_url = self._excel_find_video_url(item)
+                        if vid_url:
                             self._download_with_ffmpeg(vid_url, out_path)
                             if not do_subtitle:
                                 success += 1
-                    else:
-                        if not do_subtitle:
-                            fail += 1
-                        logging.warning(f"[excel] 영상 URL 없음: cid={cid}")
+                        else:
+                            if not do_subtitle:
+                                fail += 1
+                            logging.warning(f"[excel] 영상 URL 없음: {title}")
 
             except Exception as e:
-                logging.error(f"[excel] 오류 cid={cid}: {e}", exc_info=True)
+                logging.error(f"[excel] 오류 aiCC={ai_cc_id}: {e}", exc_info=True)
                 fail += 1
 
         self.master.after(0, self.excel_progress_bar.config, {'value': total})
