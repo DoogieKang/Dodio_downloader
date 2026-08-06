@@ -48,8 +48,8 @@ a = Analysis(
     ],
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
-    excludes=['numpy'],
+    runtime_hooks=['rthook_numpy_compat.py'],
+    excludes=[],
     noarchive=False,
 )
 
