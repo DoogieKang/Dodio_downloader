@@ -40,7 +40,7 @@ from selenium_subtitle_extractor import SeleniumSubtitleExtractor # Added
 
 
 # --- Constants ---
-APP_VERSION = "2.4.6"
+APP_VERSION = "2.4.7"
 GITHUB_REPO = "doogiekang/Dodio_downloader"
 UPDATE_CHECK_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 UPDATE_INSTALLER_URL = ""  # 최신 릴리즈에서 자동으로 가져옴
@@ -2190,9 +2190,10 @@ class SeminarGUI:
         logging.debug(f"_excel_load_file called with path={path!r}")
         try:
             import openpyxl
-            logging.debug(f"openpyxl version: {openpyxl.__version__}")
-        except ImportError:
-            messagebox.showerror("오류", "openpyxl 미설치\npip install openpyxl")
+            logging.debug(f"openpyxl OK: {openpyxl.__version__}")
+        except Exception as e:
+            logging.error(f"openpyxl import 실패: {e}", exc_info=True)
+            messagebox.showerror("오류", f"openpyxl 로드 실패:\n{e}")
             return
         try:
             wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
@@ -2236,7 +2237,8 @@ class SeminarGUI:
                 })
             wb.close()
         except Exception as e:
-            messagebox.showerror("오류", f"엑셀 읽기 실패: {e}")
+            logging.error(f"엑셀 읽기 실패: {e}", exc_info=True)
+            messagebox.showerror("오류", f"엑셀 읽기 실패:\n{e}")
             return
 
         self._excel_items = items

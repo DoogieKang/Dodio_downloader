@@ -3,13 +3,14 @@
 from PyInstaller.utils.hooks import collect_all
 ttkbs_datas, ttkbs_binaries, ttkbs_hiddenimports = collect_all('ttkbootstrap')
 selenium_datas, selenium_binaries, selenium_hiddenimports = collect_all('selenium')
+openpyxl_datas, openpyxl_binaries, openpyxl_hiddenimports = collect_all('openpyxl')
 
 a = Analysis(
     ['seminar_downloader.py'],
     pathex=[],
-    binaries=[('build_temp/ffmpeg', '.')] + ttkbs_binaries + selenium_binaries,
-    datas=[('default_config.json', '.')] + ttkbs_datas + selenium_datas,
-    hiddenimports=ttkbs_hiddenimports + selenium_hiddenimports + [
+    binaries=[('build_temp/ffmpeg', '.')] + ttkbs_binaries + selenium_binaries + openpyxl_binaries,
+    datas=[('default_config.json', '.')] + ttkbs_datas + selenium_datas + openpyxl_datas,
+    hiddenimports=ttkbs_hiddenimports + selenium_hiddenimports + openpyxl_hiddenimports + [
         'selenium',
         'selenium.webdriver',
         'selenium.webdriver.chrome',
