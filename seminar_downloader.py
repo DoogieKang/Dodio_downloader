@@ -40,7 +40,7 @@ from selenium_subtitle_extractor import SeleniumSubtitleExtractor # Added
 
 
 # --- Constants ---
-APP_VERSION = "2.4.5"
+APP_VERSION = "2.4.6"
 GITHUB_REPO = "doogiekang/Dodio_downloader"
 UPDATE_CHECK_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 UPDATE_INSTALLER_URL = ""  # 최신 릴리즈에서 자동으로 가져옴
