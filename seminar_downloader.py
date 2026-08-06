@@ -40,7 +40,7 @@ from selenium_subtitle_extractor import SeleniumSubtitleExtractor # Added
 
 
 # --- Constants ---
-APP_VERSION = "2.4.2"
+APP_VERSION = "2.4.3"
 GITHUB_REPO = "doogiekang/Dodio_downloader"
 UPDATE_CHECK_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 UPDATE_INSTALLER_URL = ""  # 최신 릴리즈에서 자동으로 가져옴
@@ -2147,19 +2147,39 @@ class SeminarGUI:
         self.excel_progress_bar.pack(fill=tk.X, pady=(6, 0))
 
     def _excel_pick_file(self):
-        from tkinter import filedialog
-        try:
-            root = self.master.winfo_toplevel()
-            root.lift()
-            root.focus_force()
-            path = filedialog.askopenfilename(
-                parent=root,
-                title="엑셀 파일 선택",
-                filetypes=[("Excel 파일", "*.xlsx *.xls"), ("모든 파일", "*.*")]
-            )
-        except Exception as e:
-            messagebox.showerror("오류", f"파일 선택 실패: {e}")
-            return
+        import platform, subprocess
+        path = None
+        if platform.system() == 'Darwin':
+            # macOS: 네이티브 파일 피커 (tkinter filedialog가 번들 앱에서 안 열리는 문제 우회)
+            try:
+                script = (
+                    'tell application "System Events" to activate\n'
+                    'set f to choose file with prompt "엑셀 파일 선택" '
+                    'of type {"xlsx", "xls", "com.microsoft.excel.xls"}\n'
+                    'return POSIX path of f'
+                )
+                result = subprocess.run(['osascript', '-e', script],
+                                        capture_output=True, text=True, timeout=60)
+                if result.returncode == 0:
+                    path = result.stdout.strip()
+            except Exception as e:
+                logging.warning(f"osascript 파일 선택 실패, tkinter 폴백: {e}")
+
+        if not path:
+            from tkinter import filedialog
+            try:
+                root = self.master.winfo_toplevel()
+                root.lift()
+                root.focus_force()
+                path = filedialog.askopenfilename(
+                    parent=root,
+                    title="엑셀 파일 선택",
+                    filetypes=[("Excel 파일", "*.xlsx *.xls"), ("모든 파일", "*.*")]
+                )
+            except Exception as e:
+                messagebox.showerror("오류", f"파일 선택 실패: {e}")
+                return
+
         if not path:
             return
         self.excel_path_var.set(path)
