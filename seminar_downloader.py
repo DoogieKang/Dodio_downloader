@@ -40,7 +40,7 @@ from selenium_subtitle_extractor import SeleniumSubtitleExtractor # Added
 
 
 # --- Constants ---
-APP_VERSION = "2.5.0"
+APP_VERSION = "2.5.1"
 GITHUB_REPO = "doogiekang/Dodio_downloader"
 UPDATE_CHECK_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 UPDATE_INSTALLER_URL = ""  # 최신 릴리즈에서 자동으로 가져옴
@@ -2815,7 +2815,9 @@ class SeminarGUI:
                     f.write('sleep 3\n')
                     f.write(f'hdiutil attach "{tmp_path}" '
                             f'-mountpoint "{mnt_path}" -nobrowse -quiet\n')
-                    f.write(f'cp -R "{mnt_path}/DodioDownloader.app" "{install_dir}/"\n')
+                    f.write(f'rsync -a --delete '
+                            f'"{mnt_path}/DodioDownloader.app/" '
+                            f'"{install_dir}/DodioDownloader.app/"\n')
                     f.write(f'hdiutil detach "{mnt_path}" -quiet\n')
                     f.write(f'open "{install_dir}/DodioDownloader.app"\n')
 
