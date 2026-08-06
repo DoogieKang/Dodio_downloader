@@ -40,7 +40,7 @@ from selenium_subtitle_extractor import SeleniumSubtitleExtractor # Added
 
 
 # --- Constants ---
-APP_VERSION = "2.4.3"
+APP_VERSION = "2.4.4"
 GITHUB_REPO = "doogiekang/Dodio_downloader"
 UPDATE_CHECK_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 UPDATE_INSTALLER_URL = ""  # 최신 릴리즈에서 자동으로 가져옴
@@ -2148,6 +2148,7 @@ class SeminarGUI:
 
     def _excel_pick_file(self):
         import platform, subprocess
+        logging.debug("_excel_pick_file called")
         path = None
         if platform.system() == 'Darwin':
             # macOS: 네이티브 파일 피커 (tkinter filedialog가 번들 앱에서 안 열리는 문제 우회)
@@ -2160,6 +2161,7 @@ class SeminarGUI:
                 )
                 result = subprocess.run(['osascript', '-e', script],
                                         capture_output=True, text=True, timeout=60)
+                logging.debug(f"osascript returncode={result.returncode} stdout={result.stdout!r} stderr={result.stderr!r}")
                 if result.returncode == 0:
                     path = result.stdout.strip()
             except Exception as e:
@@ -2186,8 +2188,10 @@ class SeminarGUI:
         self._excel_load_file(path)
 
     def _excel_load_file(self, path):
+        logging.debug(f"_excel_load_file called with path={path!r}")
         try:
             import openpyxl
+            logging.debug(f"openpyxl version: {openpyxl.__version__}")
         except ImportError:
             messagebox.showerror("오류", "openpyxl 미설치\npip install openpyxl")
             return
